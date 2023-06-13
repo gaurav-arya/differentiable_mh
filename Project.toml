@@ -1,0 +1,7 @@
+name = "DifferentiableMH"
+uuid = "19b4a027-723d-40a5-9eb2-da189a7a328a"
+
+[deps]
+Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+StochasticAD = "e4facb34-4f7e-4bec-b153-e122c37934ac"
