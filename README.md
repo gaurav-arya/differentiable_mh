@@ -2,7 +2,7 @@
 
 # Differentiable Metropolis-Hastings 
 
-This repository contains the code to reproduce the experiments in our work "Differentiating Metropolis-Hastings to Optimize Intractable Densities".
+This repository contains the code to reproduce the experiments in our working paper "Differentiating Metropolis-Hastings to Optimize Intractable Densities".
 
 ## Abstract
 
