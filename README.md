@@ -10,7 +10,16 @@ When performing inference on probabilistic models, target densities often become
 
 ## Citation
 
-To be added
+```
+@misc{arya2023differentiating,
+      title={Differentiating Metropolis-Hastings to Optimize Intractable Densities}, 
+      author={Gaurav Arya and Ruben Seyer and Frank Schäfer and Alex Lew and Mathieu Huot and Vikash K. Mansinghka
+              and Chris Rackauckas and Kartik Chandra and Moritz Schauer},
+      year={2023},
+      eprint={2306.07961},
+      archivePrefix={arXiv}
+}
+```
 
 ## Reproducing plots
 
