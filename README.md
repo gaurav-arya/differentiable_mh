@@ -1,8 +1,10 @@
 ![](plots/gaussian_plot_alts_bare.png)
 
+[![arXiv article](https://img.shields.io/badge/article-arXiv%3A10.48550-B31B1B)](https://arxiv.org/abs/2306.07961)
+
 # Differentiable Metropolis-Hastings 
 
-This repository contains the code to reproduce the experiments in our working paper "Differentiating Metropolis-Hastings to Optimize Intractable Densities".
+This repository contains the code to reproduce the experiments in our working paper [Differentiating Metropolis-Hastings to Optimize Intractable Densities](https://arxiv.org/abs/2306.07961).
 
 ## Abstract
 
