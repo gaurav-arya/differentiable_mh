@@ -13,13 +13,12 @@ When performing inference on probabilistic models, target densities often become
 ## Citation
 
 ```
-@misc{arya2023differentiating,
-      title={Differentiating Metropolis-Hastings to Optimize Intractable Densities}, 
-      author={Gaurav Arya and Ruben Seyer and Frank Schäfer and Alex Lew and Mathieu Huot and Vikash K. Mansinghka
-              and Chris Rackauckas and Kartik Chandra and Moritz Schauer},
-      year={2023},
-      eprint={2306.07961},
-      archivePrefix={arXiv}
+@inproceedings{arya2023differentiating,
+    title={Differentiating Metropolis-Hastings to Optimize Intractable Densities},
+    author={Gaurav Arya and Ruben Seyer and Frank Sch{\"a}fer and Kartik Chandra and Alexander K. Lew and Mathieu Huot and Vikash Mansinghka and Jonathan Ragan-Kelley and Christopher Vincent Rackauckas and Moritz Schauer},
+    booktitle={ICML 2023 Workshop on Differentiable Almost Everything: Differentiable Relaxations, Algorithms, Operators, and Simulators},
+    year={2023},
+    url={https://openreview.net/forum?id=2jag4Yatsz}
 }
 ```
 
