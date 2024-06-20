@@ -1,18 +1,25 @@
-![](plots/gaussian_plot_alts_bare.png)
+![](docs/src/assets/gaussian_plot_alts_bare.png)
 
-[![arXiv article](https://img.shields.io/badge/article-arXiv%3A10.48550-B31B1B)](https://arxiv.org/abs/2306.07961)
+[![arXiv article 1](https://img.shields.io/badge/article-arXiv%3A2306.07961-B31B1B)](https://arxiv.org/abs/2306.07961)
+[![arXiv article 2](https://img.shields.io/badge/article-arXiv%3A2406.XYZ-B31B1B)](https://arxiv.org/abs/2406.XYZ)
 
 # Differentiable Metropolis-Hastings 
 
-This repository contains the code to reproduce the experiments in our working paper [Differentiating Metropolis-Hastings to Optimize Intractable Densities](https://arxiv.org/abs/2306.07961).
+This repository contains the code to reproduce the experiments related to our papers on Differentiable Metropolis-Hastings:
+ * [Gradient Estimation via Differentiable Metropolis-Hastings](https://arxiv.org/abs/2406.XYZ).
+ * [Differentiating Metropolis-Hastings to Optimize Intractable Densities](https://arxiv.org/abs/2306.07961) (code under [ICML tag](https://github.com/gaurav-arya/differentiable_mh/tree/icml)).
 
-## Abstract
-
-When performing inference on probabilistic models, target densities often become intractable, necessitating the use of Monte Carlo samplers. We develop a methodology for unbiased differentiation of the Metropolis-Hastings sampler, allowing us to differentiate through probabilistic inference. By fusing recent advances in stochastic differentiation with Markov chain coupling schemes, the procedure can be made unbiased, low-variance, and automatic. This allows us to apply gradient-based optimization to objectives expressed as expectations over intractable target densities. We demonstrate our approach by finding an ambiguous observation in a Gaussian mixture model and by maximizing the specific heat in an Ising model.
-
-## Citation
+## Citations
 
 ```
+@misc{arya2024gradient,
+    title={Gradient Estimation via Differentiable Metropolis-Hastings},
+    author={Gaurav Arya and Moritz Schauer and Ruben Seyer},
+    year={2024},
+    eprint={2406.XYZ},
+    archivePrefix={arXiv}
+}
+
 @inproceedings{arya2023differentiating,
     title={Differentiating Metropolis-Hastings to Optimize Intractable Densities},
     author={Gaurav Arya and Ruben Seyer and Frank Sch{\"a}fer and Kartik Chandra and Alexander K. Lew and Mathieu Huot and Vikash Mansinghka and Jonathan Ragan-Kelley and Christopher Vincent Rackauckas and Moritz Schauer},
@@ -21,11 +28,3 @@ When performing inference on probabilistic models, target densities often become
     url={https://openreview.net/forum?id=2jag4Yatsz}
 }
 ```
-
-## Reproducing plots
-
-To reproduce the plots in the `plots` folder:
-
-* Enter the `scripts` folder.
-* Run `julia _setup_env.jl` to setup your environment.
-* Run `julia {script name}.jl` for each of the four scripts to produce the plots.
