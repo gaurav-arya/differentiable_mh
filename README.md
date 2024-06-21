@@ -1,12 +1,12 @@
 ![](docs/src/assets/gaussian_plot_alts_bare.png)
 
 [![arXiv article 1](https://img.shields.io/badge/article-arXiv%3A2306.07961-B31B1B)](https://arxiv.org/abs/2306.07961)
-[![arXiv article 2](https://img.shields.io/badge/article-arXiv%3A2406.XYZ-B31B1B)](https://arxiv.org/abs/2406.XYZ)
+[![arXiv article 2](https://img.shields.io/badge/article-arXiv%3A2406.14451-B31B1B)](https://arxiv.org/abs/2406.14451)
 
 # Differentiable Metropolis-Hastings 
 
 This repository contains the code to reproduce the experiments related to our papers on Differentiable Metropolis-Hastings:
- * [Gradient Estimation via Differentiable Metropolis-Hastings](https://arxiv.org/abs/2406.XYZ).
+ * [Gradient Estimation via Differentiable Metropolis-Hastings](https://arxiv.org/abs/2406.14451).
  * [Differentiating Metropolis-Hastings to Optimize Intractable Densities](https://arxiv.org/abs/2306.07961) (code under [ICML tag](https://github.com/gaurav-arya/differentiable_mh/tree/icml)).
 
 ## Citations
@@ -16,7 +16,7 @@ This repository contains the code to reproduce the experiments related to our pa
     title={Gradient Estimation via Differentiable Metropolis-Hastings},
     author={Gaurav Arya and Moritz Schauer and Ruben Seyer},
     year={2024},
-    eprint={2406.XYZ},
+    eprint={2406.14451},
     archivePrefix={arXiv}
 }
 
