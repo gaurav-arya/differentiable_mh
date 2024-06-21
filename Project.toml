@@ -2,6 +2,11 @@ name = "DifferentiableMH"
 uuid = "19b4a027-723d-40a5-9eb2-da189a7a328a"
 
 [deps]
+ArgCheck = "dce04be8-c92d-5529-be00-80e4d2c0e197"
 Distributions = "31c24e10-a181-5473-b8eb-7969acd0382f"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+Functors = "d9f16b24-f501-4c13-a1f2-28368ffc5196"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+PDMats = "90014a1f-27ba-587c-ab20-58faa44d9150"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 StochasticAD = "e4facb34-4f7e-4bec-b153-e122c37934ac"
