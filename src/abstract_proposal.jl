@@ -54,14 +54,6 @@ from `rand_proposal(P, y)` when `x_prop` is drawn from `rand_proposal(P, x)`.
 """
 function coupled_proposal end
 
-## Implement basic independent coupling
-
-struct IndependentMHProposalCoupling end
-
-function coupled_proposal(rng::Random.AbstractRNG, P::AbstractMHProposal, ::IndependentMHProposalCoupling, y, x, x_prop)
-    return rand_proposal(rng, P, y)
-end
-
 ## Define MHProposalDistribution wrapper
 
 """

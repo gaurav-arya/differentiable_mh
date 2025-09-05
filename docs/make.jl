@@ -16,10 +16,10 @@ format = Documenter.HTML(prettyurls = false,
 pages = [
     "Overview" => "index.md",
     "Tutorials" => [
-        "tutorials/analyze_gaussian_mh_problem.md",
-        "tutorials/analyze_ising_problem.md",
-        "tutorials/analyze_mh_tuning_problem.md",
+        "tutorials/analyze_data_contamination.md",
         "tutorials/analyze_prior_sensitivity_problem.md",
+        "tutorials/analyze_mh_tuning_problem.md",
+        "tutorials/analyze_conditional_sde.md",
     ],
     "Public API" => "public_api.md"
 ]

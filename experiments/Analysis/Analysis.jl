@@ -11,5 +11,5 @@ module Analysis
     export take_samples, get_asymptotics
     
     include("analyze_markov_problem.jl")
-    export MarkovX, get_raw_chain_slim
+    export MarkovX, get_raw_chain_slim, _get_chain_slim, _get_chain_full 
 end

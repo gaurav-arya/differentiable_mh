@@ -1,0 +1,283 @@
+# Analyzing how the DMH performs for targets with varying support
+
+````julia
+
+using DataContaminationProblem
+using DataFrames
+using DelimitedFiles
+using DifferentiableMH
+using Distributions
+using PDMats
+using LinearAlgebra
+using LogDensityProblems
+using MCMCChains
+using StochasticAD
+using Statistics
+using Turing
+using ProgressMeter
+using CairoMakie
+import Random
+import Analysis: take_samples, get_raw_chain_slim
+import Analysis
+
+# Set up StochasticAD to use the stochastic derivatives in the paper
+backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
+alg = StochasticAD.ForwardAlgorithm(backend)
+;
+
+
+function model_pdf(x, θ)
+    out = (1 - θ) * StochasticAD.propagate(x -> norm(x) < 1, x) + θ * StochasticAD.propagate(x -> 3 < norm(x) < 5, x)
+    out
+end
+
+# Run 1D chain
+Random.seed!(20240408);
+Random.seed!(StochasticAD.RNG, 20240528);
+problem = make_data_contamination_problem(model_pdf, [0.0], 1000; f = x -> norm(x)^2, burn_in=500, theta=1e-6);
+data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_uniform_mvd", get_chain = Analysis._get_chain_full);
+````
+
+Trajectory 1D
+
+````julia
+fig = Figure(size=(500,250))
+# ax_inference = Axis(fig[1, 1], xlabel = L"x_1", ylabel = L"x_2", ylabelrotation=0,
+#     xlabelsize=16, ylabelsize=16, aspect=1, width=350,height=350)
+ax_inference = Axis(fig[1, 1], xlabel = L"\text{Iterations}", ylabelrotation=0,
+    xlabelsize=16, ylabelsize=16, ylabel=L"x") #, xticks=(0:50, map(i -> (i % 5 == 0 || (i == 1)) ? repr(i) : "", 1:51)))
+
+# plot primal
+primals_1d = map(x -> StochasticAD.value(x[1]), data.chain[500:1000])
+scatterlines!(ax_inference, 500:1000, primals_1d; color = (:black, 1.0), markersize=3)
+
+# plot perturbations
+Δs_1d = map(x -> StochasticAD.perturbations(x[1])[1].Δ, data.chain[500:1000])
+ws_1d = map(x -> StochasticAD.perturbations(x[1])[1].weight, data.chain[500:1000])
+max_abs_ws_1d = maximum(abs.(ws_1d))
+scatterlines!(ax_inference, 500:1000, Δs_1d .+ primals_1d; color = [(:red, 2 * w / max_abs_ws_1d) for w in ws_1d], markersize=3)
+
+xlims!(ax_inference, 500, 1000)
+
+elem_primal = LineElement(color = :black, marker = :circle)
+elem_residual = LineElement(color = :red, marker = :circle)
+axislegend(ax_inference, [elem_primal, elem_residual], [L"\text{MH Chain}", L"\text{DMH Augmentations}"]; backgroundcolor = (:white, 0.8), position=:rb)
+
+fig
+````
+![](analyze_data_contamination-4.png)
+
+Trajectory 2D
+
+````julia
+Random.seed!(1234);
+Random.seed!(StochasticAD.RNG, 1234);
+
+burn_in = 1000
+n = 2000
+
+problem = make_data_contamination_problem(model_pdf, [0.0, 0.0], n; f = x -> norm(x)^2, burn_in, theta=1e-6)
+data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_uniform_mvd", get_chain = Analysis._get_chain_full)
+
+# plot 2d
+
+fig = Figure(size=(400,480))
+ax_inference = Axis(fig[1, 1], xlabel = L"x_1", ylabel = L"x_2", ylabelrotation=0,
+    xlabelsize=16, ylabelsize=16, aspect=1, width=350,height=350) #, xticks=(0:50, map(i -> (i % 5 == 0 || (i == 1)) ? repr(i) : "", 1:51)))
+
+poly!(ax_inference, Circle(Point2f(0,0), 5), color = (:red, 0.2))
+poly!(ax_inference, Circle(Point2f(0,0), 3), color = (:white, 1))
+poly!(ax_inference, Circle(Point2f(0,0), 1), color = (:black, 0.2))
+
+primals = map(x -> StochasticAD.value.(x), data.chain[burn_in:n])
+Δs = map(x -> map(z -> StochasticAD.perturbations(z)[1].Δ, x), data.chain[burn_in:n])
+ws = map(x -> StochasticAD.perturbations(x[1])[1].weight, data.chain[burn_in:n])
+max_abs_ws = maximum(abs.(ws))
+scatterlines!(ax_inference, map(x -> x[1], primals), map(x -> x[2], primals); color = (:black, 1.0), markersize=3)
+scatterlines!(ax_inference, map(x -> x[1], primals) .+ map(x -> x[1], Δs), map(x -> x[2], primals) .+ map(x -> x[2], Δs); color = [(:red, 2 * w / max_abs_ws) for w in ws], markersize=3)
+
+elem_primal = LineElement(color = :black, marker = :circle)
+elem_residual = LineElement(color = :red, marker = :circle)
+elem_original = PolyElement(color = (:black, 0.2))
+elem_contaminated = PolyElement(color = (:red, 0.2))
+Legend(fig[2,1], [elem_primal, elem_residual, elem_original, elem_contaminated], [L"\text{MH Chain}", L"\text{DMH Augmentations}", L"\text{Original density}", L"\text{Contamination to density}"]; backgroundcolor = (:white, 0.8), nbanks = 2)
+
+fig
+````
+![](analyze_data_contamination-6.png)
+
+Collect variance asymptotics w.r.t. theta
+
+````julia
+means = []
+stds = []
+
+thetas = vcat([1e-6], 0.01:0.01:0.2)
+nruns = 100
+
+for theta in thetas
+    @show theta
+    ests = []
+    for i in 1:nruns
+        problem = make_data_contamination_problem(model_pdf, [0.0], 1000; f = x -> norm(x)^2, burn_in=500, theta = theta)
+        data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_uniform_mvd", get_chain = Analysis._get_chain_full)
+        primals = map(x -> StochasticAD.value.(x), data.chain[500:1000])
+        est = StochasticAD.delta(data.ret)
+        push!(ests, est)
+    end
+    push!(means, mean(ests))
+    push!(stds, std(ests))
+end
+````
+
+````
+┌ Warning: Assignment to `problem` in soft scope is ambiguous because a global variable by the same name exists: `problem` will be treated as a new local. Disambiguate by using `local problem` to suppress this warning or `global problem` to assign to the existing global variable.
+└ @ /proj/pdmps/repos/dmh/docs/src/tutorials/analyze_data_contamination.md:11
+┌ Warning: Assignment to `data` in soft scope is ambiguous because a global variable by the same name exists: `data` will be treated as a new local. Disambiguate by using `local data` to suppress this warning or `global data` to assign to the existing global variable.
+└ @ /proj/pdmps/repos/dmh/docs/src/tutorials/analyze_data_contamination.md:12
+┌ Warning: Assignment to `primals` in soft scope is ambiguous because a global variable by the same name exists: `primals` will be treated as a new local. Disambiguate by using `local primals` to suppress this warning or `global primals` to assign to the existing global variable.
+└ @ /proj/pdmps/repos/dmh/docs/src/tutorials/analyze_data_contamination.md:13
+theta = 1.0e-6
+theta = 0.01
+theta = 0.02
+theta = 0.03
+theta = 0.04
+theta = 0.05
+theta = 0.06
+theta = 0.07
+theta = 0.08
+theta = 0.09
+theta = 0.1
+theta = 0.11
+theta = 0.12
+theta = 0.13
+theta = 0.14
+theta = 0.15
+theta = 0.16
+theta = 0.17
+theta = 0.18
+theta = 0.19
+theta = 0.2
+
+````
+
+Comparison to score
+
+````julia
+using ForwardDiff
+
+function score(x, theta; baseline = 0)
+    return (norm(x)^2 - baseline) * ForwardDiff.derivative(theta -> log(model_pdf(x, theta)), theta)
+end
+
+score_means = []
+score_stds = []
+
+for theta in thetas
+    ests = []
+    for i in 1:nruns
+        problem = make_data_contamination_problem(model_pdf, [0.0], 1000; f = x -> norm(x)^2, burn_in=500, theta = theta)
+        data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_uniform_mvd")
+        primals = map(x -> StochasticAD.value(x[1]), data.chain[500:1000])
+        baseline = mean(map(x -> norm(x)^2, primals))
+        scores = map(x -> (z = score(x, theta; baseline); if isnan(z) error(x) end; z), primals)
+        est = mean(scores[length(scores) ÷ 2:end])
+        push!(ests, est)
+    end
+    push!(score_means, mean(ests))
+    push!(score_stds, std(ests))
+end
+
+means
+score_means
+````
+
+````
+21-element Vector{Any}:
+  0.0014323919598605705
+ 30.762529106215144
+ 27.414886189047035
+ 33.3262268338436
+ 26.679666229489342
+ 29.03851515490783
+ 27.143497243822296
+ 27.050266654908604
+ 27.589290758427204
+ 24.505213499976136
+ 25.84452729516681
+ 24.45349915313026
+ 25.73966284250595
+ 22.968425015263136
+ 22.306628465308496
+ 23.0838652918737
+ 21.92200028590771
+ 23.35438593189641
+ 22.93423106161103
+ 21.790288744557923
+ 20.94048278809247
+````
+
+Plot variance comparison
+
+````julia
+fig = Figure(size=(500,180))
+ax = Axis(fig[1, 1], xlabel = L"\theta", ylabel = L"\text{Variance}") #, yscale =log10)
+
+score_vars = score_stds.^2
+dmh_vars = stds.^2
+score_var_errs = map(v -> sqrt(2 / (nruns - 1)) * v, score_vars) .* 1.96
+dmh_var_errs = map(v -> sqrt(2 / (nruns - 1)) * v, dmh_vars) .* 1.96
+
+scatterlines!(ax, thetas[3:end], score_vars[3:end]; label = "Likelihood Ratio", color = :blue)
+band!(ax, thetas[3:end], score_vars[3:end] .- score_var_errs[3:end], score_vars[3:end] .+ score_var_errs[3:end]; color = (:blue, 0.2))
+scatterlines!(ax, thetas, dmh_vars; label = "DMH", color = :orange)
+band!(ax, thetas, dmh_vars .- dmh_var_errs, dmh_vars .+ dmh_var_errs; color = (:orange, 0.2))
+
+axislegend(ax)
+
+fig
+````
+![](analyze_data_contamination-12.png)
+
+````julia
+# Publication figure
+fig = Figure(size=(850,450))
+
+# A
+ax_inference = Axis(fig[1,1], xlabel = "Iterations", ylabelrotation=0,
+    xlabelsize=16, ylabelsize=16, ylabel=L"x") #, xticks=(0:50, map(i -> (i % 5 == 0 || (i == 1)) ? repr(i) : "", 1:51)))
+scatterlines!(ax_inference, 500:1000, primals_1d; color = (:black, 1.0), markersize=3)
+scatterlines!(ax_inference, 500:1000, Δs_1d .+ primals_1d; color = [(:red, 2 * w / max_abs_ws_1d) for w in ws_1d], markersize=3)
+xlims!(ax_inference, 500, 1000)
+Label(fig[1,1,TopLeft()], "A", font=:bold, halign = :left)
+
+# B
+ax_inference = Axis(fig[1:2,2], xlabel = L"x_1", ylabel = L"x_2", ylabelrotation=0,
+    xlabelsize=16, ylabelsize=16, aspect=1, width=350,height=350) #, xticks=(0:50, map(i -> (i % 5 == 0 || (i == 1)) ? repr(i) : "", 1:51)))
+
+poly!(ax_inference, Circle(Point2f(0,0), 5), color = (:red, 0.2))
+poly!(ax_inference, Circle(Point2f(0,0), 3), color = (:white, 1))
+poly!(ax_inference, Circle(Point2f(0,0), 1), color = (:black, 0.2))
+
+scatterlines!(ax_inference, map(x -> x[1], primals), map(x -> x[2], primals); color = (:black, 1.0), markersize=3)
+scatterlines!(ax_inference, map(x -> x[1], primals) .+ map(x -> x[1], Δs), map(x -> x[2], primals) .+ map(x -> x[2], Δs); color = [(:red, 2 * w / max_abs_ws) for w in ws], markersize=3)
+
+Label(fig[1:2,2,TopLeft()], "B", font=:bold, halign = :left)
+
+# C
+ax = Axis(fig[2,1], xlabel = L"\theta", ylabel = "Variance") #, yscale =log10)
+scatterlines!(ax, thetas[3:end], score_vars[3:end]; label = "Likelihood ratio", color = :blue, marker=:diamond)
+band!(ax, thetas[3:end], score_vars[3:end] .- score_var_errs[3:end], score_vars[3:end] .+ score_var_errs[3:end]; color = (:blue, 0.2))
+scatterlines!(ax, thetas, dmh_vars; label = "DMH", color = :red, marker=:rect)
+band!(ax, thetas, dmh_vars .- dmh_var_errs, dmh_vars .+ dmh_var_errs; color = (:red, 0.2))
+Label(fig[2,1,TopLeft()], "C", font=:bold, halign = :left)
+
+colgap!(fig.layout, 30)
+
+save("../assets/data_contamination.pdf", fig);
+````
+
+---
+
+*This page was generated using [Literate.jl](https://github.com/fredrikekre/Literate.jl).*
+

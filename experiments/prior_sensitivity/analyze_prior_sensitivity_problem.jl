@@ -1,10 +1,10 @@
 #text # Analyzing prior sensitivity 
 
 ##cell
-cd(dirname(@__DIR__))
-push!(LOAD_PATH, @__DIR__)
-push!(LOAD_PATH, joinpath(dirname(@__DIR__), "Analysis"))
-push!(LOAD_PATH, joinpath(dirname(dirname(@__DIR__)), "src")) # (DMH)  #src
+cd(dirname(@__DIR__))  #hide
+push!(LOAD_PATH, @__DIR__)  #hide
+push!(LOAD_PATH, joinpath(dirname(@__DIR__), "Analysis"))  #hide
+push!(LOAD_PATH, joinpath(dirname(dirname(@__DIR__)), "src")) # (DMH)  #hide
 
 using PriorSensitivityProblem
 using DataFrames
@@ -18,8 +18,10 @@ using MCMCChains
 using StochasticAD
 using Statistics
 using Turing
+using DynamicPPL
 using ProgressMeter
 using CairoMakie
+import Bijectors
 import Random
 import Analysis: take_samples, get_raw_chain_slim
 
@@ -206,7 +208,7 @@ out_primal, out_dual = raw_chains_to_summary(4,
     [obs_names[1:13]; "Intercept(c)"; "σ"]);
 GC.gc();  # for people like me with puny computers
 
-out_primal  # prints summary diagnostics
+describe(out_primal)  # prints summary diagnostics
 
 ##cell
 #=
@@ -228,15 +230,14 @@ out_primal2, out_dual2 = raw_chains_to_summary(4,
     [obs_names[1:13]; "Intercept(c)"; "σ"]);
 GC.gc();
 
-out_primal2
+describe(out_primal2)
 
 #-
-function primal_plot(before, after, subset; kwargs...)
+function primal_plot(l, before, after, subset; kwargs...)
     μ_before, μ_after = mean(before), mean(after)
     q_before, q_after = quantile(before; q=[0.025, 0.975]), quantile(after; q=[0.025, 0.975])
     ix = 1:length(subset)
-    f = Figure(size=(350,450))
-    ax = Axis(f[1,1]; yticks=(ix, string.(μ_before[subset,1])), yreversed=true, kwargs...)
+    ax = Axis(l; yticks=(ix, string.(μ_before[subset,1])), yreversed=true, kwargs...)
     dodge = 0.2
 
     rangebars!(ax, ix .- dodge, q_before[subset,2], q_before[subset,3]; direction=:x)
@@ -244,17 +245,16 @@ function primal_plot(before, after, subset; kwargs...)
 
     rangebars!(ax, ix .+ dodge, q_after[subset,2], q_after[subset,3]; direction=:x)
     scatter!(ax, μ_after[subset,2], ix .+ dodge; markersize=12)
-
-    return f
 end;
-primal_plot(out_primal, out_primal2, 1:13)
+f = Figure(size=(350,450))
+primal_plot(f[1,1], out_primal, out_primal2, 1:13)
+f
 
 #-
-function dual_plot(before, after; kwargs...)
+function dual_plot(l, before, after; kwargs...)
     df_before, df_after = describe(before, :mean, :std), describe(after, :mean, :std)
     ix = 1:nrow(df_before)
-    f = Figure(size=(350,450))
-    ax = Axis(f[1,1]; yticks=(ix, string.(df_before.variable)), yreversed=true, kwargs...)
+    ax = Axis(l; yticks=(ix, string.(df_before.variable)), yreversed=true, kwargs...)
     dodge = 0.2
     color = Makie.wong_colors()
 
@@ -263,43 +263,21 @@ function dual_plot(before, after; kwargs...)
 
     barplot!(ax, ix .+ dodge, df_after.mean; direction=:x, width=0.5, strokewidth=1, color=(color[2], 0.33), strokecolor=color[2])
     errorbars!(ax, df_after.mean, ix .+ dodge, df_after.std ./ √(nrow(df_after)); direction=:x, whiskerwidth=10, color=color[2])
-
-    return f
 end;
-dual_plot(out_dual, out_dual2)
+f = Figure(size=(350,450))
+dual_plot(f[1,1], out_dual, out_dual2)
+f
 
 #=
 We see that the prior sensitivity is now reduced, so that our goal of uninformative priors is closer to being achieved.
 (Note that improper priors would have not been sensitive to power scaling.)
 =#
 
-
 ##cell
-#! format: off #src
-using Literate #src
-
-function preprocess(content) #src
-    new_lines = map(split(content, "\n")) do line #src
-        if endswith(line, "#src") #src
-            line #src
-        elseif startswith(line, "##cell") #src
-            "#src" #src
-        elseif startswith(line, "#text") #src
-            replace(line, "#text" => "#") #src
-        # try and save comments; strip necessary since Literate.jl also treats indented comments on their own line as markdown. #src
-        elseif startswith(strip(line), "#") && !startswith(strip(line), "#=") && !startswith(strip(line), "#-") #src
-            # TODO: should be replace first occurence only? #src
-            replace(line, "#" => "##") #src
-        # special for this to load text file #src
-        elseif startswith(line, "basepath = ") #src
-            "basepath = $(repr(dirname(@__DIR__)))" #src
-        else #src
-            line #src
-        end #src
-    end #src
-    return join(new_lines, "\n") #src
-end #src
-
-withenv("JULIA_DEBUG" => "Literate") do #src
-    @time Literate.markdown(@__FILE__, joinpath(pwd(), "..", "docs", "src", "tutorials"); execute = true, flavor = Literate.CommonMarkFlavor(), preprocess = preprocess) #src
-end #src
+# Publication plot
+f = Figure(size=(800,450))
+primal_plot(f[1,1], out_primal, out_primal2, 1:13)
+dual_plot(f[1,2], out_dual, out_dual2)
+Label(f[1,1,TopLeft()], "A", font=:bold, halign = :left)
+Label(f[1,2,TopLeft()], "B", font=:bold, halign = :left)
+save("../assets/prior_sensitivity.pdf", f);

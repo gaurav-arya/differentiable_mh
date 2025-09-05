@@ -1,10 +1,10 @@
 #text # Gaussian Random Walk Metropolis-Hastings Proposal Tuning
 
 ##cell
-cd(dirname(@__DIR__))
-push!(LOAD_PATH, @__DIR__)
-push!(LOAD_PATH, joinpath(dirname(@__DIR__), "Analysis"))
-push!(LOAD_PATH, joinpath(dirname(dirname(@__DIR__)), "src")) # (DMH)  #src
+cd(dirname(@__DIR__))  #hide
+push!(LOAD_PATH, @__DIR__)  #hide
+push!(LOAD_PATH, joinpath(dirname(@__DIR__), "Analysis"))  #hide
+push!(LOAD_PATH, joinpath(dirname(dirname(@__DIR__)), "src")) # (DMH)  #hide
 
 using MHTuningProblem
 using Statistics
@@ -80,8 +80,9 @@ function plot_autocov_estimate_curve(target, θs; N = 250000, x0 = 0.0, θref = 
 
     #' Plot primal and derivative estimates
     fig = Figure(size=(300,500))
-    ax1 = Axis(fig[1, 1], ylabel = length(x0) == 1 ? "γ₁" : "det(γ₁)")
-    ax2 = Axis(fig[2, 1], ylabel = length(x0) == 1 ? "∂γ₁" : "∂det(γ₁)", xlabel = "σ")
+    Label(fig[1,1,Top()], L"d = %$(length(x0))", halign = :center)
+    ax1 = Axis(fig[1, 1], ylabel = length(x0) == 1 ? L"\gamma_1" : L"\det(\gamma_1)")
+    ax2 = Axis(fig[2, 1], ylabel = length(x0) == 1 ? L"\partial\gamma_1" : L"\partial\det(\gamma_1)", xlabel = L"\sigma")
     linkxaxes!(ax1, ax2)
 
     primal_samples = map(samples -> only(samples[samples[!, "alg_id"] .== "primal", :]), all_samples)
@@ -99,7 +100,9 @@ end;
 
 ##cell
 #text Gaussian target: the conventional wisdom applies
-plot_autocov_estimate_curve(Normal(0,1), LinRange(1.5,3.0,30))
+fig = plot_autocov_estimate_curve(Normal(0,1), LinRange(1.5,3.0,30))
+save("../assets/rwmh_tuning_gaussian_1d.pdf", fig);
+fig
 
 #= #src
 # Laplace target: fatter tails require larger step size than the corresponding Gaussian #src
@@ -124,10 +127,14 @@ seems to lead to weird behaviour for problems with varying scales.
 =#
 
 #text 3D Gaussian
-plot_autocov_estimate_curve(MvNormal(zeros(3),I), LinRange(1.5,3.0,30) ./ √3; x0 = zeros(3), θref = 2.38/√3)
+fig = plot_autocov_estimate_curve(MvNormal(zeros(3),I), LinRange(1.5,3.0,30) ./ √3; x0 = zeros(3), θref = 2.38/√3)
+save("../assets/rwmh_tuning_gaussian_3d.pdf", fig);
+fig
 
 #text 5D Gaussian
-plot_autocov_estimate_curve(MvNormal(zeros(5),I), LinRange(1.5,3.0,30) ./ √5; x0 = zeros(5), θref = 2.38/√5)
+fig = plot_autocov_estimate_curve(MvNormal(zeros(5),I), LinRange(1.5,3.0,30) ./ √5; x0 = zeros(5), θref = 2.38/√5)
+save("../assets/rwmh_tuning_gaussian_5d.pdf", fig);
+fig
 
 #= #src
 # Bimodal. Here the uniform scaling is starting to be inefficient #src
@@ -179,7 +186,10 @@ function opt_autocov_reverse(
         N=250000, opt_iters=800, optimizer=Adam(0.005),
         video=nothing, image=nothing,
         full_parameterization = Val(false), forward_mode = Val(false),
-        proposal_coupling = MaximumReflectionProposalCoupling())
+        proposal_coupling = MaximumReflectionProposalCoupling(),
+        seeds = (20240403, 20240528))
+    Random.seed!(seeds[1]);
+    Random.seed!(StochasticAD.RNG, seeds[2]);
 
     if full_parameterization isa Val{true}
         function make_prop_chol(p)
@@ -207,23 +217,25 @@ function opt_autocov_reverse(
         make_prop = make_prop_diag
     end
 
-    backend = StrategyWrapperFIsBackend(PrunedCustomFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
-    #backend = PrunedCustomFIsBackend(Val(:wins))  # aka uniformly pruning directional weights
+    backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
     if forward_mode isa Val{true}
-        stad_alg = StochasticADExtra.ForwardAlgorithm(backend)
+        stad_alg = StochasticAD.ForwardAlgorithm(backend)
     else
-        stad_alg = StochasticADExtra.EnzymeReverseAlgorithm(backend)
+        stad_alg = StochasticAD.EnzymeReverseAlgorithm(backend)
     end
 
     if !isnothing(video) || !isnothing(image)
         # Setup the figure
         θ_observable = Observable(copy(θ))
         fig = Figure(size=(400,400))
-        ax1 = Axis(fig[1, 1], limits=(-6,6,-6,6), autolimitaspect=1)
+        ax1 = Axis(fig[1, 1], autolimitaspect=1)
         xs = LinRange(-8,8,1000)
         ys = xs
         contourf!(ax1, xs, ys, [pdf(target, [x;y]) for x in xs, y in ys],
             colormap=Makie.Reverse(:grays), levels=0.1:0.1:1.5, mode = :relative)
+        autolimits!(ax1)  # trigger limit computation
+        limit_bound = 1.45 * maximum(abs.(vcat(extrema(ax1.finallimits[])...)))
+        limits!(ax1, -limit_bound, limit_bound, -limit_bound, limit_bound)
         dprop = @lift make_prop($θ_observable)
         dzs = @lift [pdf($dprop, [x;y]) for x in xs, y in ys]
         contour!(ax1, xs, ys, dzs, linewidth=2.0)
@@ -254,7 +266,7 @@ function opt_autocov_reverse(
         end
         if !isnothing(image)
             θ_observable[] = θ
-            autolimits!(ax1)
+            #autolimits!(ax1)  # Broke in a later version of Makie?
         end
     end
 
@@ -279,7 +291,7 @@ Similarly to the 1D problem it seems the objective is quite flat close to the op
 =#
 out = opt_autocov_reverse(
     MvNormal(zeros(2), Diagonal([1.0;4.0])),
-    [2.0;2.0], zeros(2); forward_mode = Val(true),
+    N=500_000, [2.0;2.0], zeros(2); forward_mode = Val(true),
     image=true); #video="PT_Gaussian_scales.mp4")
 out.θ
 
@@ -289,7 +301,7 @@ out.fig
 #text Something bimodal.
 out = opt_autocov_reverse(
     MixtureModel(MvNormal, [([-2.5;0.0], 1.0*I), ([+2.5;0.0], 1.0*I)], [0.5, 0.5]),
-    2.5 .* ones(2), zeros(2); forward_mode = Val(true),
+    N=500_000, 2.5 .* ones(2), zeros(2); forward_mode = Val(true),
     image=true);
 out.θ
 
@@ -299,13 +311,13 @@ out.fig
 #text Introducing correlations, but not yet full parameters
 opt_autocov_reverse(
     MvNormal(zeros(2), Symmetric([1.0 0.5; 0.5 1.0])),
-    2.0 .* ones(2), zeros(2); forward_mode = Val(true),
+    N=500_000, 2.0 .* ones(2), zeros(2); forward_mode = Val(true),
     image=true).fig #video="PT_Gaussian_corr.mp4")
 
 #text Now with control over correlations as well. Scaling and rotating suggests [1.68291;0.841457;1.45745]
 out = opt_autocov_reverse(
     MvNormal(zeros(2), Symmetric([1.0 0.5; 0.5 1.0])),
-    [2.0;0.0;2.0], zeros(2); forward_mode = Val(true), full_parameterization = Val(true),
+    N=500_000, [2.0;0.0;2.0], zeros(2); forward_mode = Val(true), full_parameterization = Val(true),
     image=true); #video="PT_Gaussian_chol.mp4")
 out.θ
 
@@ -313,10 +325,15 @@ out.θ
 out.fig
 
 #text Check the chain diagnostics
-out.chain_stats
+describe(out.chain_stats)
 
 #-
 out.acc
+
+#-
+# Save the figure
+Label(out.fig[1,1,TopLeft()], "A", font=:bold, halign = :left)
+save("../assets/rwmh_tuning_full_A.pdf", out.fig);
 
 #text an interesting mixture landscape stolen from Campbell et al. (2021)
 struct DualMoon end
@@ -332,7 +349,8 @@ Distributions.mean(::DualMoon) = zeros(2)
 
 out = opt_autocov_reverse(
     DualMoon(),
-    [2.0;0.0;2.0], zeros(2); forward_mode = Val(true), full_parameterization = Val(true),
+    [2.0;0.0;2.0], zeros(2);
+    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
     image=true); #video="PT_dualmoon.mp4")
 out.θ
 
@@ -340,17 +358,23 @@ out.θ
 out.fig
 
 #-
-out.chain_stats
+describe(out.chain_stats)
 
 #-
 out.acc
 
+#-
+# Save the figure
+Label(out.fig[1,1,TopLeft()], "B", font=:bold, halign = :left)
+save("../assets/rwmh_tuning_full_B.pdf", out.fig);
+
 #text Compare with what happens if we try to tune by hand: effective sample size is worse when following conventional wisdom.
 out = opt_autocov_reverse(
     DualMoon(),
-    0.64 .* [2.358;-0.327;2.386], zeros(2); forward_mode = Val(true), full_parameterization = Val(true),
+    0.64 .* [2.358;-0.327;2.386], zeros(2);
+    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
     image=true, opt_iters=0);
-out.chain_stats
+describe(out.chain_stats)
 
 #-
 out.acc
@@ -372,7 +396,8 @@ Distributions.mean(R::Rosenbrock) = [R.μ; R.μ^2 + 1/(2 * R.a)]
 out = opt_autocov_reverse(
     Rosenbrock(),
     optimizer=Adam(0.003),
-    0.6 .* [1.0;0.0;1.0], [0.1;0.0]; forward_mode = Val(true), full_parameterization = Val(true),
+    0.6 .* [1.0;0.0;1.0], [0.1;0.0];
+    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
     image=true); #video="PT_Rosenbrock.mp4")
 out.θ
 
@@ -380,44 +405,41 @@ out.θ
 out.fig
 
 #-
-out.chain_stats
+describe(out.chain_stats)
 
 #-
 out.acc
+
+#text What happens if we start in the mode?
+out = opt_autocov_reverse(
+    Rosenbrock(),
+    optimizer=Adam(0.003),
+    0.6 .* [1.0;0.0;1.0], zeros(2);
+    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
+    image=true); #video="PT_Rosenbrock.mp4")
+out.θ
+
+#-
+out.fig
+
+#-
+describe(out.chain_stats)
+
+#-
+out.acc
+
+#-
+# Save the figure
+Label(out.fig[1,1,TopLeft()], "C", font=:bold, halign = :left)
+save("../assets/rwmh_tuning_full_C.pdf", out.fig);
 
 #text Compare with what happens if we try to tune by acceptance rate
 out = opt_autocov_reverse(
     Rosenbrock(),
-    0.375 .* [1.0;0.0;1.0], [0.1;0.0]; forward_mode = Val(true), full_parameterization = Val(true),
+    0.375 .* [1.0;0.0;1.0], [0.1;0.0];
+    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
     image=true, opt_iters=0);
-out.chain_stats
+describe(out.chain_stats)
 
 #-
 out.acc
-
-##cell
-#! format: off #src
-using Literate #src
-
-function preprocess(content) #src
-    new_lines = map(split(content, "\n")) do line #src
-        if endswith(line, "#src") #src
-            line #src
-        elseif startswith(line, "##cell") #src
-            "#src" #src
-        elseif startswith(line, "#text") #src
-            replace(line, "#text" => "#") #src
-        # try and save comments; strip necessary since Literate.jl also treats indented comments on their own line as markdown. #src
-        elseif startswith(strip(line), "#") && !startswith(strip(line), "#=") && !startswith(strip(line), "#-") #src
-            # TODO: should be replace first occurence only? #src
-            replace(line, "#" => "##") #src
-        else #src
-            line #src
-        end #src
-    end #src
-    return join(new_lines, "\n") #src
-end #src
-
-withenv("JULIA_DEBUG" => "Literate") do #src
-    @time Literate.markdown(@__FILE__, joinpath(pwd(), "..", "docs", "src", "tutorials"); execute = true, flavor = Literate.CommonMarkFlavor(), preprocess = preprocess) #src
-end #src

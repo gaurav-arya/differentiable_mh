@@ -20,8 +20,9 @@ export rand_proposal, logpdf_proposal, logratio_proposal, coupled_proposal
 export MHProposalDistribution
 export AbstractMHProposal, AbstractMHProposalCoupling
 
+include("proposals/independent_mh_proposal.jl")
 include("proposals/random_walk_mh_proposal.jl")
-export RandomWalkMHProposal
-export MaximumReflectionProposalCoupling
+export RandomWalkMHProposal, IndependentMHProposal
+export MaximumReflectionProposalCoupling, IndependentMHProposalCoupling
 
 end

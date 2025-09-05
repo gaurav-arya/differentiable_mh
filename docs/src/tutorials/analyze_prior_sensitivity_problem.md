@@ -1,9 +1,6 @@
 # Analyzing prior sensitivity
 
 ````julia
-cd(dirname(@__DIR__))
-push!(LOAD_PATH, @__DIR__)
-push!(LOAD_PATH, joinpath(dirname(@__DIR__), "Analysis"))
 
 using PriorSensitivityProblem
 using DataFrames
@@ -17,8 +14,10 @@ using MCMCChains
 using StochasticAD
 using Statistics
 using Turing
+using DynamicPPL
 using ProgressMeter
 using CairoMakie
+import Bijectors
 import Random
 import Analysis: take_samples, get_raw_chain_slim
 
@@ -113,7 +112,7 @@ problem.targets["primal"].X(stochastic_triple(problem.settings.p; backend=alg.ba
 ````
 
 ````
-2-element Vector{StochasticTriple{StochasticAD.Tag{typeof(identity), Float64}, Float64, StrategyWrapperFIs{Float64, PrunedFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIsState{Val{:wins}, Int64}}, StochasticAD.StraightThroughStrategy}}}:
+2-element Vector{StochasticAD.StochasticTriple{StochasticAD.Tag{typeof(identity), Float64}, Float64, StochasticAD.StrategyWrapperFIsModule.StrategyWrapperFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIsState{Val{:wins}, Int64}}, StochasticAD.StraightThroughStrategy}}}:
  9.534393128101781 + -0.30058005873481886ε
  0.8867360239243471 + 0.1805051025905024ε
 ````
@@ -129,7 +128,7 @@ problem.targets["primal"].X(stochastic_triple(problem.settings.p; backend=alg.ba
 ````
 
 ````
-2-element Vector{StochasticTriple{StochasticAD.Tag{typeof(identity), Float64}, Float64, StrategyWrapperFIs{Float64, PrunedFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIsState{Val{:wins}, Int64}}, StochasticAD.StraightThroughStrategy}}}:
+2-element Vector{StochasticAD.StochasticTriple{StochasticAD.Tag{typeof(identity), Float64}, Float64, StochasticAD.StrategyWrapperFIsModule.StrategyWrapperFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIsState{Val{:wins}, Int64}}, StochasticAD.StraightThroughStrategy}}}:
  9.849098884213356 + 2.7610393152798845e-5ε
  0.8180103377903132 + 0.0005170371181383768ε
 ````
@@ -162,7 +161,7 @@ we are still able to identify the absence of sensitivity as in the previous exam
 Load the `bodyfat` data
 
 ````julia
-basepath = dirname(@__DIR__)
+basepath = dirname("/proj/pdmps/repos/dmh/experiments/prior_sensitivity")
 raw_data, raw_header = DelimitedFiles.readdlm(joinpath(basepath, "prior_sensitivity/bodyfat.txt"), ';', header = true)
 df = DataFrame(raw_data, vec(raw_header))
 obs_names = ["wrist", "weight_kg", "thigh", "neck", "knee", "hip", "height_cm", "forearm", "chest", "biceps", "ankle", "age", "abdomen", "siri"]
@@ -227,10 +226,11 @@ out_primal, out_dual = raw_chains_to_summary(4,
     [obs_names[1:13]; "Intercept(c)"; "σ"]);
 GC.gc();  # for people like me with puny computers
 
-out_primal  # prints summary diagnostics
+describe(out_primal)  # prints summary diagnostics
 ````
 
 ````
+Progress:  50%|████████████████████▌                    |  ETA: 0:20:01[KProgress: 100%|█████████████████████████████████████████| Time: 0:41:17[K
 Chains MCMC chain (250000×15×4 Array{Float64, 3}):
 
 Iterations        = 1:1:250000
@@ -298,10 +298,11 @@ out_primal2, out_dual2 = raw_chains_to_summary(4,
     [obs_names[1:13]; "Intercept(c)"; "σ"]);
 GC.gc();
 
-out_primal2
+describe(out_primal2)
 ````
 
 ````
+Progress:  50%|████████████████████▌                    |  ETA: 0:27:22[KProgress: 100%|█████████████████████████████████████████| Time: 0:54:17[K
 Chains MCMC chain (250000×15×4 Array{Float64, 3}):
 
 Iterations        = 1:1:250000
@@ -352,12 +353,11 @@ Quantiles
 ````
 
 ````julia
-function primal_plot(before, after, subset; kwargs...)
+function primal_plot(l, before, after, subset; kwargs...)
     μ_before, μ_after = mean(before), mean(after)
     q_before, q_after = quantile(before; q=[0.025, 0.975]), quantile(after; q=[0.025, 0.975])
     ix = 1:length(subset)
-    f = Figure(size=(350,450))
-    ax = Axis(f[1,1]; yticks=(ix, string.(μ_before[subset,1])), yreversed=true, kwargs...)
+    ax = Axis(l; yticks=(ix, string.(μ_before[subset,1])), yreversed=true, kwargs...)
     dodge = 0.2
 
     rangebars!(ax, ix .- dodge, q_before[subset,2], q_before[subset,3]; direction=:x)
@@ -365,19 +365,18 @@ function primal_plot(before, after, subset; kwargs...)
 
     rangebars!(ax, ix .+ dodge, q_after[subset,2], q_after[subset,3]; direction=:x)
     scatter!(ax, μ_after[subset,2], ix .+ dodge; markersize=12)
-
-    return f
 end;
-primal_plot(out_primal, out_primal2, 1:13)
+f = Figure(size=(350,450))
+primal_plot(f[1,1], out_primal, out_primal2, 1:13)
+f
 ````
 ![](analyze_prior_sensitivity_problem-26.png)
 
 ````julia
-function dual_plot(before, after; kwargs...)
+function dual_plot(l, before, after; kwargs...)
     df_before, df_after = describe(before, :mean, :std), describe(after, :mean, :std)
     ix = 1:nrow(df_before)
-    f = Figure(size=(350,450))
-    ax = Axis(f[1,1]; yticks=(ix, string.(df_before.variable)), yreversed=true, kwargs...)
+    ax = Axis(l; yticks=(ix, string.(df_before.variable)), yreversed=true, kwargs...)
     dodge = 0.2
     color = Makie.wong_colors()
 
@@ -386,15 +385,25 @@ function dual_plot(before, after; kwargs...)
 
     barplot!(ax, ix .+ dodge, df_after.mean; direction=:x, width=0.5, strokewidth=1, color=(color[2], 0.33), strokecolor=color[2])
     errorbars!(ax, df_after.mean, ix .+ dodge, df_after.std ./ √(nrow(df_after)); direction=:x, whiskerwidth=10, color=color[2])
-
-    return f
 end;
-dual_plot(out_dual, out_dual2)
+f = Figure(size=(350,450))
+dual_plot(f[1,1], out_dual, out_dual2)
+f
 ````
 ![](analyze_prior_sensitivity_problem-27.png)
 
 We see that the prior sensitivity is now reduced, so that our goal of uninformative priors is closer to being achieved.
 (Note that improper priors would have not been sensitive to power scaling.)
+
+````julia
+# Publication plot
+f = Figure(size=(800,450))
+primal_plot(f[1,1], out_primal, out_primal2, 1:13)
+dual_plot(f[1,2], out_dual, out_dual2)
+Label(f[1,1,TopLeft()], "A", font=:bold, halign = :left)
+Label(f[1,2,TopLeft()], "B", font=:bold, halign = :left)
+save("../assets/prior_sensitivity.pdf", f);
+````
 
 ---
 

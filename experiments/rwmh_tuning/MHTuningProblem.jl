@@ -5,7 +5,6 @@ using DifferentiableMH
 using Distributions
 using LinearAlgebra
 using StochasticAD
-using StochasticADExtra
 using ArgCheck
 using Functors
 

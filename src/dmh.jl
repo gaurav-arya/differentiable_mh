@@ -11,7 +11,7 @@ function mh(get_logpdf, proposal, x0; iters = 200, burn_in = 50, f, f_init=0.0, 
     if get_samples isa Val{true}
         # TODO: fix below monstrosity to find correct type 
         fake_rng = copy(Random.default_rng())
-        sampletype = [x0][0 + rand(fake_rng, Bernoulli(one(get_logpdf(x0))))] |> typeof
+        sampletype = x0 * rand(fake_rng, Bernoulli(one(get_logpdf(x0)))) |> typeof
         samples = sampletype[]
     end
     x = x0
