@@ -17,11 +17,12 @@ function mh_basic_kernel_no_log(x, kernel_params)
     get_pdf = get_logpdf 
     x_proposed = rand(MHProposalDistribution(x, proposal, proposal_coupling))
     α = min(1.0, get_pdf(x_proposed) / get_pdf(x))
-    coin = rand(Bernoulli(α))
+    # Avoid Distributions' probability-domain check on a StochasticTriple.
+    coin = rand(Bernoulli{typeof(α)}(α))
     x = x + (x_proposed - x) * coin #[x, x_proposed][1 + coin]
-    if 1 < StochasticAD.value.(x)[1] < 3
-        error(x)
-    end
+    #if 1 < LinearAlgebra.norm_sqr(StochasticAD.value.(x)) < 9
+    #    error(x)
+    #end
     return x
 end
 

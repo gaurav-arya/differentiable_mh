@@ -83,7 +83,7 @@ end
 
 # TODO: can StochasticAD.propagate take care of some of boilerplate for defining a primitive here?
 # (A: yes, it should, if we generalize it sufficiently.)
-function Base.rand(rng::Random.AbstractRNG, d_st::MHProposalDistribution{<:Union{StochasticTriple{T}, Vector{<:StochasticTriple{T}}}}) where {T}
+function Base.rand(rng::Random.AbstractRNG, d_st::MHProposalDistribution{<:Union{StochasticAD.StochasticTriple{T}, Vector{<:StochasticAD.StochasticTriple{T}}}}) where {T}
     x_st = d_st.x
     proposal_coupling = d_st.proposal_coupling
     if isnothing(proposal_coupling)

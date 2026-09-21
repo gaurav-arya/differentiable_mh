@@ -25,4 +25,9 @@ include("proposals/random_walk_mh_proposal.jl")
 export RandomWalkMHProposal, IndependentMHProposal
 export MaximumReflectionProposalCoupling, IndependentMHProposalCoupling
 
+# Experimental
+include("proposals/papp_sherlock_coupling.jl")
+include("proposals/mala_proposal.jl")
+export MALAProposal, PappSherlockProposalCoupling
+
 end

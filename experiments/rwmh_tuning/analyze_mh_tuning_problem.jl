@@ -22,6 +22,7 @@ using PDMats
 using MCMCChains
 import Random
 import Analysis: take_samples
+import BenchmarkTools
 
 Random.seed!(20240403);
 Random.seed!(StochasticAD.RNG, 20240528);
@@ -46,10 +47,10 @@ stationarity should have mean essentially independent of the proposal distributi
 
 problem = make_mh_tuning_problem(100000; target=Normal(0,1))
 problem.targets["primal"].X(problem.settings.p, problem.settings)
-samples = take_samples(problem, discrete_alg_flags = ["pruning","mvd","uniform"], store_samples = true)
+samples = take_samples(problem, discrete_alg_flags = ["pruning","mvd"], store_samples = true)
 
 #text An example histogram of the estimator:
-pruning_samples = only(samples[samples[!, "alg_id"] .== "pruning_uniform_mvd", :]).samples
+pruning_samples = only(samples[samples[!, "alg_id"] .== "pruning_mvd", :]).samples
 fig = Figure()
 ax = Axis(fig[1,1])
 hist!(ax, pruning_samples; normalization = :pdf)
@@ -64,10 +65,10 @@ acceptance rate is achieved for a step size σ = 2.38 * √Var(X) for Gaussian t
 We'll show this value in the plot to compare with the minimum.
 =#
 
-function plot_autocov_estimate_curve(target, θs; N = 250000, x0 = 0.0, θref = nothing, nsims = 100)
+function plot_autocov_estimate_curve(target, θs; N = 10000, x0 = 0.0, θref = nothing, nsims = 500)
     #' Collect samples for a range of θ values
     problems = map(θ -> make_mh_tuning_problem(N; θ, target, x0), θs);
-    all_samples = take_samples.(problems; discrete_alg_flags = "pruning_uniform_mvd", store_samples = false, nsims);
+    all_samples = take_samples.(problems; discrete_alg_flags = "pruning_mvd", store_samples = false, nsims);
 
     #=
     #' Prettier title
@@ -86,7 +87,7 @@ function plot_autocov_estimate_curve(target, θs; N = 250000, x0 = 0.0, θref = 
     linkxaxes!(ax1, ax2)
 
     primal_samples = map(samples -> only(samples[samples[!, "alg_id"] .== "primal", :]), all_samples)
-    deriv_samples = map(samples -> only(samples[samples[!, "alg_id"] .== "pruning_uniform_mvd", :]), all_samples)
+    deriv_samples = map(samples -> only(samples[samples[!, "alg_id"] .== "pruning_mvd", :]), all_samples)
     isnothing(θref) && (θref = 2.38 * std(target))
 
     scatterlines!(ax1, θs, map(r -> r.mean, primal_samples), color = :black)
@@ -154,7 +155,7 @@ GC.gc() #src
 function opt_autocov(target, θ0, x0; N=200000, opt_iters=400, optimizer=Adam(0.01))
     θ = Float64[θ0]
     proposal_coupling = MaximumReflectionProposalCoupling()
-    backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
+    backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:weights)), StochasticAD.StraightThroughStrategy())  # aka weighted pruning MVD
 
     θ_st = stochastic_triple(θ[1]; backend)
     proposal = RandomWalkMHProposal{typeof(x0 * θ_st)}(Normal(0, θ_st))
@@ -183,11 +184,12 @@ opt_autocov(Normal(0,1), 1.5, 0.0)
 #text To do so efficiently at scale requires reverse mode.
 function opt_autocov_reverse(
         target, θ::Vector{Float64}, x0;
-        N=250000, opt_iters=800, optimizer=Adam(0.005),
+        #N=500000, opt_iters=800, optimizer=Adam(1e-2),
+        N=5000, opt_iters=80000, optimizer=Adam(1e-3),
         video=nothing, image=nothing,
         full_parameterization = Val(false), forward_mode = Val(false),
         proposal_coupling = MaximumReflectionProposalCoupling(),
-        seeds = (20240403, 20240528))
+        seeds = (20240403, 20240528), timed = Val(false))
     Random.seed!(seeds[1]);
     Random.seed!(StochasticAD.RNG, seeds[2]);
 
@@ -199,7 +201,6 @@ function opt_autocov_reverse(
             return MvNormal(zero(x0), Σ)
         end
         function derivative_f_chol(p)
-            # TODO full parameterization would require something like this
             proposal = RandomWalkMHProposal{typeof(x0 .* p[1])}(make_prop_chol(p))
             MHTuningProblem.mh_acf(target, proposal, x0; iters=N, proposal_coupling).sample_autocorr
         end
@@ -217,7 +218,7 @@ function opt_autocov_reverse(
         make_prop = make_prop_diag
     end
 
-    backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
+    backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:weights)), StochasticAD.StraightThroughStrategy())  # aka weighted pruning MVD
     if forward_mode isa Val{true}
         stad_alg = StochasticAD.ForwardAlgorithm(backend)
     else
@@ -250,10 +251,11 @@ function opt_autocov_reverse(
     progress = Progress(opt_iters; showspeed=true)
 
     # Run the optimizer
+    opt_start = time_ns()
     if !isnothing(video)
         record(fig, video, 1:opt_iters; framerate=10) do _
             dγdθ = derivative_estimate(derivative_f, θ, stad_alg)
-
+            #θ_prev = copy(θ)
             Optimisers.update!(state, θ, dγdθ)
             next!(progress; showvalues = [(:θ,θ), (:dγdθ,dγdθ)])
             θ_observable[] = θ
@@ -261,6 +263,7 @@ function opt_autocov_reverse(
     else
         for _ in 1:opt_iters
             dγdθ = derivative_estimate(derivative_f, θ, stad_alg)
+            #θ_prev = copy(θ)
             Optimisers.update!(state, θ, dγdθ)
             next!(progress; showvalues = [(:θ,θ), (:dγdθ,dγdθ)])
         end
@@ -269,18 +272,28 @@ function opt_autocov_reverse(
             #autolimits!(ax1)  # Broke in a later version of Makie?
         end
     end
+    duration = (time_ns() - opt_start) / 1e9
 
     # Collect some statistics
     proposal = RandomWalkMHProposal{typeof(x0)}(make_prop(θ))
     outputs = map(1:4) do _
-        raw = last(mh(Base.Fix1(logpdf, target), proposal, x0; iters=N, burn_in=0, f=identity, f_init=zero(x0), get_samples=Val(true)))
+        raw = last(mh(Base.Fix1(logpdf, target), proposal, x0; iters=500_000, burn_in=0, f=identity, f_init=zero(x0), get_samples=Val(true)))
         reduce(hcat, raw)'
     end
     chain_stats = Chains(cat(outputs..., dims=3))
     acc = 1 - mean(mapslices(iszero, diff(chain_stats.value; dims=1); dims=2))
 
+    # Timings
+    if timed isa Val{true}
+        duration_primal = BenchmarkTools.@btimed ($derivative_f)($θ)
+        duration_derivative = BenchmarkTools.@btimed derivative_estimate($derivative_f, $θ, $stad_alg)
+        timings = (; full=duration, primal=duration_primal.time, derivative=duration_derivative.time, ratio=duration_derivative.time/duration_primal.time)
+    else
+        timings = nothing
+    end
+
     γ = derivative_f(θ)
-    return (; θ, γ, dγdθ, fig, chain_stats, acc)
+    return (; θ, γ, dγdθ, fig, chain_stats, acc, timings)
 end;
 
 ##cell
@@ -288,20 +301,38 @@ end;
 Independent Gaussian with different scales, should work without problems.
 Theory tells us to expect [1.68; 3.36] by transforming the optimal isotropic proposal with the scales.
 Similarly to the 1D problem it seems the objective is quite flat close to the optimum, so we don't quite recover the ideal scale but close enough.
+Here, we run few long but expensive chains.
 =#
 out = opt_autocov_reverse(
     MvNormal(zeros(2), Diagonal([1.0;4.0])),
-    N=500_000, [2.0;2.0], zeros(2); forward_mode = Val(true),
+    [2.0;2.0], zeros(2); forward_mode = Val(true), timed = Val(true),
+    N=500000, opt_iters=800, optimizer=Adam(1e-2),
     image=true); #video="PT_Gaussian_scales.mp4")
 out.θ
 
 #-
+out.timings
+
+#-
 out.fig
+
+#=
+Again the independent Gaussian, but this time we run many short noisy chains.
+=#
+out = opt_autocov_reverse(
+    MvNormal(zeros(2), Diagonal([1.0;4.0])),
+    [2.0;2.0], zeros(2); forward_mode = Val(true), timed = Val(true),
+    N=5000, opt_iters=80000, optimizer=Adam(1e-3),
+    image=true);
+out.θ
+
+#-
+out.timings
 
 #text Something bimodal.
 out = opt_autocov_reverse(
     MixtureModel(MvNormal, [([-2.5;0.0], 1.0*I), ([+2.5;0.0], 1.0*I)], [0.5, 0.5]),
-    N=500_000, 2.5 .* ones(2), zeros(2); forward_mode = Val(true),
+    2.5 .* ones(2), zeros(2); forward_mode = Val(true),
     image=true);
 out.θ
 
@@ -311,18 +342,22 @@ out.fig
 #text Introducing correlations, but not yet full parameters
 opt_autocov_reverse(
     MvNormal(zeros(2), Symmetric([1.0 0.5; 0.5 1.0])),
-    N=500_000, 2.0 .* ones(2), zeros(2); forward_mode = Val(true),
+    2.0 .* ones(2), zeros(2); forward_mode = Val(true),
     image=true).fig #video="PT_Gaussian_corr.mp4")
 
 #text Now with control over correlations as well. Scaling and rotating suggests [1.68291;0.841457;1.45745]
 out = opt_autocov_reverse(
     MvNormal(zeros(2), Symmetric([1.0 0.5; 0.5 1.0])),
-    N=500_000, [2.0;0.0;2.0], zeros(2); forward_mode = Val(true), full_parameterization = Val(true),
+    [2.0;0.0;2.0], zeros(2);
+    forward_mode = Val(true), full_parameterization = Val(true), timed = Val(true),
     image=true); #video="PT_Gaussian_chol.mp4")
 out.θ
 
 #-
 out.fig
+
+#-
+out.timings
 
 #text Check the chain diagnostics
 describe(out.chain_stats)
@@ -350,12 +385,15 @@ Distributions.mean(::DualMoon) = zeros(2)
 out = opt_autocov_reverse(
     DualMoon(),
     [2.0;0.0;2.0], zeros(2);
-    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
+    forward_mode = Val(true), full_parameterization = Val(true), timed = Val(true),
     image=true); #video="PT_dualmoon.mp4")
 out.θ
 
 #-
 out.fig
+
+#-
+out.timings
 
 #-
 describe(out.chain_stats)
@@ -395,9 +433,9 @@ Distributions.mean(R::Rosenbrock) = [R.μ; R.μ^2 + 1/(2 * R.a)]
 
 out = opt_autocov_reverse(
     Rosenbrock(),
-    optimizer=Adam(0.003),
-    0.6 .* [1.0;0.0;1.0], [0.1;0.0];
-    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
+    0.6 .* [1.0;0.0;1.0], [0.1,0.0];
+    N=15000, optimizer=Adam(3e-4), #Adam(3e-3),
+    forward_mode = Val(true), full_parameterization = Val(true), timed = Val(true),
     image=true); #video="PT_Rosenbrock.mp4")
 out.θ
 
@@ -405,22 +443,7 @@ out.θ
 out.fig
 
 #-
-describe(out.chain_stats)
-
-#-
-out.acc
-
-#text What happens if we start in the mode?
-out = opt_autocov_reverse(
-    Rosenbrock(),
-    optimizer=Adam(0.003),
-    0.6 .* [1.0;0.0;1.0], zeros(2);
-    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
-    image=true); #video="PT_Rosenbrock.mp4")
-out.θ
-
-#-
-out.fig
+out.timings
 
 #-
 describe(out.chain_stats)
@@ -436,7 +459,7 @@ save("../assets/rwmh_tuning_full_C.pdf", out.fig);
 #text Compare with what happens if we try to tune by acceptance rate
 out = opt_autocov_reverse(
     Rosenbrock(),
-    0.375 .* [1.0;0.0;1.0], [0.1;0.0];
+    0.375 .* [1.0;0.0;1.0], zeros(2);
     N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
     image=true, opt_iters=0);
 describe(out.chain_stats)

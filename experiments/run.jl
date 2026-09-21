@@ -1,28 +1,31 @@
 #!/bin/bash
 #
-#SBATCH -J naiss2024-22-1100-dmh
-#SBATCH -t 64:00:00
-#SBATCH --mem=16000
-#SBATCH -n 1
-#SBATCH --array=0-3
+#SBATCH -A C3SE2026-1-16 -p vera
+#SBATCH -J dmh-experiments
+#SBATCH -t 7-00:00:00
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=4
+#SBATCH --array=0-2
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=rubense@chalmers.se
+#SBATCH --output=%x.%j.out
 
 #=
 tasks=(
     "data_contamination/analyze_data_contamination.jl"
     "prior_sensitivity/analyze_prior_sensitivity_problem.jl"
     "rwmh_tuning/analyze_mh_tuning_problem.jl"
-    "conditional_sde/analyze_conditional_sde.jl"
 )
 
-module add julia/1.10.2-bdist
-export JULIA_DEPOT_PATH="/proj/pdmps/julia:$JULIA_DEPOT_PATH"
-export JULIA_PROJECT=/proj/pdmps/repos/dmh/experiments
-export OPENBLAS_NUM_THREADS=1
-cd /proj/pdmps/repos/dmh/experiments
+module load Julia/1.10.2-linux-x86_64
+export JULIA_NUM_THREADS=1
+repo_dir="$REPOS/differentiable_mh"
+experiment_dir="$repo_dir/experiments"
+export JULIA_PROJECT="$experiment_dir"
+
+cd "$experiment_dir"
 echo "Running task ${tasks[$SLURM_ARRAY_TASK_ID]}"
-exec julia /proj/pdmps/repos/dmh/experiments/run.jl ${tasks[$SLURM_ARRAY_TASK_ID]}
+exec julia "$experiment_dir/run.jl" "${tasks[$SLURM_ARRAY_TASK_ID]}"
 =#
 #
 # Script ends here

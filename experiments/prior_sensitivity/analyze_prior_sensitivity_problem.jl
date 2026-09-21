@@ -23,7 +23,8 @@ using ProgressMeter
 using CairoMakie
 import Bijectors
 import Random
-import Analysis: take_samples, get_raw_chain_slim
+import Analysis: take_samples, get_primal_chain_slim, get_raw_chain_slim,
+    get_primal_timing, get_derivative_timing
 
 Random.seed!(20240408);
 Random.seed!(StochasticAD.RNG, 20240528);
@@ -31,8 +32,49 @@ Random.seed!(StochasticAD.RNG, 20240528);
 # Monkey patch Bijectors for StochasticTriple
 Bijectors._eps(::Type{StochasticTriple{T,V,FI}}) where {T,V,FI} = eps(V)
 
-# Set up StochasticAD to use the stochastic derivatives in the paper
-backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
+# Support for a sinh link to transform the heavy-tailed intercept prior
+struct SinhLink{Tloc,Tscale} <: Bijectors.Bijector
+    loc::Tloc
+    scale::Tscale
+end
+
+function Bijectors.with_logabsdet_jacobian(b::SinhLink, x)
+    y = asinh.((x .- b.loc) ./ b.scale)
+    return y, sum(-log(abs(b.scale)) .- log.(cosh.(y)))
+end
+Bijectors.transform(b::SinhLink, x) = first(Bijectors.with_logabsdet_jacobian(b, x))
+
+function Bijectors.with_logabsdet_jacobian(ib::Bijectors.Inverse{<:SinhLink}, y)
+    b = ib.orig
+    x = b.loc .+ b.scale .* sinh.(y)
+    return x, sum(log(abs(b.scale)) .+ log.(cosh.(y)))
+end
+Bijectors.transform(ib::Bijectors.Inverse{<:SinhLink}, y) = first(Bijectors.with_logabsdet_jacobian(ib, y))
+
+struct LinkedDistribution{D<:ContinuousUnivariateDistribution,B<:Bijectors.Bijector} <: ContinuousUnivariateDistribution
+    dist::D
+    link::B
+end
+
+with_link(dist::ContinuousUnivariateDistribution, link::Bijectors.Bijector) = LinkedDistribution(dist, link)
+function inverse_link_coordinate(p, idx, link)
+    x = copy(p)
+    x[idx] = Bijectors.inverse(link)(p[idx])
+    return x
+end;
+
+Distributions.logpdf(d::LinkedDistribution, x::Real) = logpdf(d.dist, x)
+Distributions.loglikelihood(d::LinkedDistribution, x) = loglikelihood(d.dist, x)
+Distributions.params(d::LinkedDistribution) = params(d.dist)
+Distributions.insupport(d::LinkedDistribution, x::Real) = insupport(d.dist, x)
+Base.minimum(d::LinkedDistribution) = minimum(d.dist)
+Base.maximum(d::LinkedDistribution) = maximum(d.dist)
+Base.rand(rng::Random.AbstractRNG, d::LinkedDistribution) = rand(rng, d.dist)
+Bijectors.bijector(d::LinkedDistribution) = d.link
+DynamicPPL.link_transform(d::LinkedDistribution) = d.link
+
+# Set up StochasticAD to use importance sampled pruning
+backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:weights)), StochasticAD.StraightThroughStrategy())  # aka pruning MVD
 alg = StochasticAD.ForwardAlgorithm(backend)
 ;
 
@@ -86,8 +128,9 @@ function make_targetlogpdf(model, args...; kwargs...)
     vi = DynamicPPL.link!!(vi, m)  # transforms to unconstrained space
     function model_logpdf(x, θ)
         vals = DynamicPPL.unflatten(vi, x)
-        # FIXME: is there a better way than this really stupid hack to also
-        # get the Jacobian term for transformed variables?
+        # For linked VarInfo, `loglikelihood` carries the support-transform
+        # corrections, while `logjoint - loglikelihood` leaves the model prior
+        # on the original constrained parameterization for power scaling.
         loglik = DynamicPPL.loglikelihood(m, vals)
         logpri = DynamicPPL.logjoint(m, vals) - loglik
         loglik + 2^θ * logpri
@@ -168,13 +211,17 @@ Xd = Matrix(obs[:,1:13]) .- μ_obs[1:13]';
     prior_β0_loc = mean(y)  # assumes centering
 )
     βk ~ arraydist(Normal.(0,prior_scales))
-    β0 ~ LocationScale(prior_β0_loc,9.2,TDist(3))
+    β0 ~ with_link(
+        LocationScale(prior_β0_loc,9.2,TDist(3)),
+        SinhLink(prior_β0_loc, 1.0),
+    )
     σ ~ truncated(LocationScale(0.0,9.2,TDist(3)); lower=0.0)
     return y ~ MvNormal(β0 .+ X * βk, σ^2 * I)
 end;
 model_logpdf = make_targetlogpdf(bodyfat, Xd, obs[:,14]; prior_scales = ones(13));
+bodyfat_untransform(p) = untransform(inverse_link_coordinate(p, 14, SinhLink(mean(obs[:,14]), 1.0)));
 
-#text Start from zero vector
+#text Start from zero slopes, the intercept prior location, and unit residual scale.
 init = zeros(15);
 
 #=
@@ -191,21 +238,23 @@ proposal = RandomWalkMHProposal{Vector{Float64}}(MvNormal(zero(init), A));
 Run the DMH and display diagnostics for the primal.
 It takes a long while to keep the whole history!
 =#
-function raw_chains_to_summary(n_chains, get_raw, names)
+function raw_chains_to_summary(n_chains, get_raw, names; untransform=untransform)
     outputs = @showprogress map(1:n_chains) do _
         raw = get_raw()
         samples = @views reduce(hcat, map(state -> untransform(StochasticAD.value.(state)), raw.chain[(raw.settings.burn_in + 2):end]))'
         deltas = StochasticAD.delta.(raw.ret)
-        return samples, deltas
+        return samples, deltas, raw.duration
     end
     samples = cat(first.(outputs)..., dims=3)
-    deltas = hcat(last.(outputs)...)'
-    Chains(samples, names), DataFrame(deltas, names)
+    deltas = hcat(map(output -> output[2], outputs)...)'
+    durations = map(output -> output[3], outputs)
+    Chains(samples, names; info = (; duration = sum(durations), durations)), DataFrame(deltas, names)
 end;
-problem = make_prior_sensitivity_problem(model_logpdf, init, 350000; f = untransform, proposal, burn_in=100000)
+problem = make_prior_sensitivity_problem(model_logpdf, init, 500_000; f = bodyfat_untransform, proposal, burn_in=100_000)
 out_primal, out_dual = raw_chains_to_summary(4,
-    () -> get_raw_chain_slim(problem; target="primal", alg_id="pruning_uniform_mvd"),
-    [obs_names[1:13]; "Intercept(c)"; "σ"]);
+    () -> get_raw_chain_slim(problem; target="primal", alg_id="pruning_mvd"),
+    [obs_names[1:13]; "Intercept(c)"; "σ"];
+    untransform=bodyfat_untransform);
 GC.gc();  # for people like me with puny computers
 
 describe(out_primal)  # prints summary diagnostics
@@ -224,10 +273,11 @@ the priors $`\beta_k \sim \mathsf{N}(0, (2.5 s_y/s_{x_k})^2)`$.
 =#
 
 model_logpdf2 = make_targetlogpdf(bodyfat, Xd, obs[:,14]; );
-problem2 = make_prior_sensitivity_problem(model_logpdf2, init, 350000; f = untransform, proposal, burn_in=100000)
+problem2 = make_prior_sensitivity_problem(model_logpdf2, init, 500_000; f = bodyfat_untransform, proposal, burn_in=100_000)
 out_primal2, out_dual2 = raw_chains_to_summary(4,
-    () -> get_raw_chain_slim(problem2; target="primal", alg_id="pruning_uniform_mvd"),
-    [obs_names[1:13]; "Intercept(c)"; "σ"]);
+    () -> get_raw_chain_slim(problem2; target="primal", alg_id="pruning_mvd"),
+    [obs_names[1:13]; "Intercept(c)"; "σ"];
+    untransform=bodyfat_untransform);
 GC.gc();
 
 describe(out_primal2)
@@ -259,10 +309,10 @@ function dual_plot(l, before, after; kwargs...)
     color = Makie.wong_colors()
 
     barplot!(ax, ix .- dodge, df_before.mean; direction=:x, width=0.5, strokewidth=1, color=(color[1], 0.33), strokecolor=color[1])
-    errorbars!(ax, df_before.mean, ix .- dodge, df_before.std ./ √(nrow(df_before)); direction=:x, whiskerwidth=10, color=color[1])
+    errorbars!(ax, df_before.mean, ix .- dodge, df_before.std ./ √(nrow(before)); direction=:x, whiskerwidth=10, color=color[1])
 
     barplot!(ax, ix .+ dodge, df_after.mean; direction=:x, width=0.5, strokewidth=1, color=(color[2], 0.33), strokecolor=color[2])
-    errorbars!(ax, df_after.mean, ix .+ dodge, df_after.std ./ √(nrow(df_after)); direction=:x, whiskerwidth=10, color=color[2])
+    errorbars!(ax, df_after.mean, ix .+ dodge, df_after.std ./ √(nrow(after)); direction=:x, whiskerwidth=10, color=color[2])
 end;
 f = Figure(size=(350,450))
 dual_plot(f[1,1], out_dual, out_dual2)
@@ -281,3 +331,15 @@ dual_plot(f[1,2], out_dual, out_dual2)
 Label(f[1,1,TopLeft()], "A", font=:bold, halign = :left)
 Label(f[1,2,TopLeft()], "B", font=:bold, halign = :left)
 save("../assets/prior_sensitivity.pdf", f);
+
+##cell
+# Timings
+primal_timing = get_primal_timing(problem; target="primal")
+derivative_timing = get_derivative_timing(
+    problem; target="primal", backend=backend)
+
+(;
+    primal_ns = primal_timing.ns,
+    derivative_ns = derivative_timing.ns,
+    ratio = derivative_timing.ns / primal_timing.ns,
+)

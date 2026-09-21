@@ -19,7 +19,8 @@ using ProgressMeter
 using CairoMakie
 import Bijectors
 import Random
-import Analysis: take_samples, get_raw_chain_slim
+import Analysis: take_samples, get_primal_chain_slim, get_raw_chain_slim,
+    get_primal_timing, get_derivative_timing
 
 Random.seed!(20240408);
 Random.seed!(StochasticAD.RNG, 20240528);
@@ -27,8 +28,49 @@ Random.seed!(StochasticAD.RNG, 20240528);
 # Monkey patch Bijectors for StochasticTriple
 Bijectors._eps(::Type{StochasticTriple{T,V,FI}}) where {T,V,FI} = eps(V)
 
-# Set up StochasticAD to use the stochastic derivatives in the paper
-backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
+# Support for a sinh link to transform the heavy-tailed intercept prior
+struct SinhLink{Tloc,Tscale} <: Bijectors.Bijector
+    loc::Tloc
+    scale::Tscale
+end
+
+function Bijectors.with_logabsdet_jacobian(b::SinhLink, x)
+    y = asinh.((x .- b.loc) ./ b.scale)
+    return y, sum(-log(abs(b.scale)) .- log.(cosh.(y)))
+end
+Bijectors.transform(b::SinhLink, x) = first(Bijectors.with_logabsdet_jacobian(b, x))
+
+function Bijectors.with_logabsdet_jacobian(ib::Bijectors.Inverse{<:SinhLink}, y)
+    b = ib.orig
+    x = b.loc .+ b.scale .* sinh.(y)
+    return x, sum(log(abs(b.scale)) .+ log.(cosh.(y)))
+end
+Bijectors.transform(ib::Bijectors.Inverse{<:SinhLink}, y) = first(Bijectors.with_logabsdet_jacobian(ib, y))
+
+struct LinkedDistribution{D<:ContinuousUnivariateDistribution,B<:Bijectors.Bijector} <: ContinuousUnivariateDistribution
+    dist::D
+    link::B
+end
+
+with_link(dist::ContinuousUnivariateDistribution, link::Bijectors.Bijector) = LinkedDistribution(dist, link)
+function inverse_link_coordinate(p, idx, link)
+    x = copy(p)
+    x[idx] = Bijectors.inverse(link)(p[idx])
+    return x
+end;
+
+Distributions.logpdf(d::LinkedDistribution, x::Real) = logpdf(d.dist, x)
+Distributions.loglikelihood(d::LinkedDistribution, x) = loglikelihood(d.dist, x)
+Distributions.params(d::LinkedDistribution) = params(d.dist)
+Distributions.insupport(d::LinkedDistribution, x::Real) = insupport(d.dist, x)
+Base.minimum(d::LinkedDistribution) = minimum(d.dist)
+Base.maximum(d::LinkedDistribution) = maximum(d.dist)
+Base.rand(rng::Random.AbstractRNG, d::LinkedDistribution) = rand(rng, d.dist)
+Bijectors.bijector(d::LinkedDistribution) = d.link
+DynamicPPL.link_transform(d::LinkedDistribution) = d.link
+
+# Set up StochasticAD to use importance sampled pruning
+backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:weights)), StochasticAD.StraightThroughStrategy())  # aka pruning MVD
 alg = StochasticAD.ForwardAlgorithm(backend)
 ;
 ````
@@ -79,8 +121,9 @@ function make_targetlogpdf(model, args...; kwargs...)
     vi = DynamicPPL.link!!(vi, m)  # transforms to unconstrained space
     function model_logpdf(x, θ)
         vals = DynamicPPL.unflatten(vi, x)
-        # FIXME: is there a better way than this really stupid hack to also
-        # get the Jacobian term for transformed variables?
+        # For linked VarInfo, `loglikelihood` carries the support-transform
+        # corrections, while `logjoint - loglikelihood` leaves the model prior
+        # on the original constrained parameterization for power scaling.
         loglik = DynamicPPL.loglikelihood(m, vals)
         logpri = DynamicPPL.logjoint(m, vals) - loglik
         loglik + 2^θ * logpri
@@ -112,9 +155,9 @@ problem.targets["primal"].X(stochastic_triple(problem.settings.p; backend=alg.ba
 ````
 
 ````
-2-element Vector{StochasticAD.StochasticTriple{StochasticAD.Tag{typeof(identity), Float64}, Float64, StochasticAD.StrategyWrapperFIsModule.StrategyWrapperFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIsState{Val{:wins}, Int64}}, StochasticAD.StraightThroughStrategy}}}:
- 9.534393128101781 + -0.30058005873481886ε
- 0.8867360239243471 + 0.1805051025905024ε
+2-element Vector{StochasticAD.StochasticTriple{StochasticAD.Tag{typeof(identity), Float64}, Float64, StochasticAD.StrategyWrapperFIsModule.StrategyWrapperFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIsState{Val{:weights}, Nothing}}, StochasticAD.StraightThroughStrategy}}}:
+ 9.534393128101781 + -0.29026712035004115ε
+ 0.8867360239243471 + 0.14166129396339444ε
 ````
 
 The derivatives tell us about the relative sensitivity of the parameters.
@@ -128,9 +171,9 @@ problem.targets["primal"].X(stochastic_triple(problem.settings.p; backend=alg.ba
 ````
 
 ````
-2-element Vector{StochasticAD.StochasticTriple{StochasticAD.Tag{typeof(identity), Float64}, Float64, StochasticAD.StrategyWrapperFIsModule.StrategyWrapperFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIsState{Val{:wins}, Int64}}, StochasticAD.StraightThroughStrategy}}}:
- 9.849098884213356 + 2.7610393152798845e-5ε
- 0.8180103377903132 + 0.0005170371181383768ε
+2-element Vector{StochasticAD.StochasticTriple{StochasticAD.Tag{typeof(identity), Float64}, Float64, StochasticAD.StrategyWrapperFIsModule.StrategyWrapperFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIs{Float64, StochasticAD.PrunedFIsModule.PrunedFIsState{Val{:weights}, Nothing}}, StochasticAD.StraightThroughStrategy}}}:
+ 9.849098884213356 + 0.0005278747466101784ε
+ 0.8180103377903132 + 0.0008655666178187703ε
 ````
 
 The prior sensitivity was reduced by several orders of magnitude, and the prior is now less influential on the final estimate.
@@ -161,7 +204,7 @@ we are still able to identify the absence of sensitivity as in the previous exam
 Load the `bodyfat` data
 
 ````julia
-basepath = dirname("/proj/pdmps/repos/dmh/experiments/prior_sensitivity")
+basepath = dirname("/cephyr/users/rubense/Vera/repos/differentiable_mh/experiments/prior_sensitivity")
 raw_data, raw_header = DelimitedFiles.readdlm(joinpath(basepath, "prior_sensitivity/bodyfat.txt"), ';', header = true)
 df = DataFrame(raw_data, vec(raw_header))
 obs_names = ["wrist", "weight_kg", "thigh", "neck", "knee", "hip", "height_cm", "forearm", "chest", "biceps", "ankle", "age", "abdomen", "siri"]
@@ -182,14 +225,18 @@ Set up the model.
     prior_β0_loc = mean(y)  # assumes centering
 )
     βk ~ arraydist(Normal.(0,prior_scales))
-    β0 ~ LocationScale(prior_β0_loc,9.2,TDist(3))
+    β0 ~ with_link(
+        LocationScale(prior_β0_loc,9.2,TDist(3)),
+        SinhLink(prior_β0_loc, 1.0),
+    )
     σ ~ truncated(LocationScale(0.0,9.2,TDist(3)); lower=0.0)
     return y ~ MvNormal(β0 .+ X * βk, σ^2 * I)
 end;
 model_logpdf = make_targetlogpdf(bodyfat, Xd, obs[:,14]; prior_scales = ones(13));
+bodyfat_untransform(p) = untransform(inverse_link_coordinate(p, 14, SinhLink(mean(obs[:,14]), 1.0)));
 ````
 
-Start from zero vector
+Start from zero slopes, the intercept prior location, and unit residual scale.
 
 ````julia
 init = zeros(15);
@@ -209,74 +256,76 @@ Run the DMH and display diagnostics for the primal.
 It takes a long while to keep the whole history!
 
 ````julia
-function raw_chains_to_summary(n_chains, get_raw, names)
+function raw_chains_to_summary(n_chains, get_raw, names; untransform=untransform)
     outputs = @showprogress map(1:n_chains) do _
         raw = get_raw()
         samples = @views reduce(hcat, map(state -> untransform(StochasticAD.value.(state)), raw.chain[(raw.settings.burn_in + 2):end]))'
         deltas = StochasticAD.delta.(raw.ret)
-        return samples, deltas
+        return samples, deltas, raw.duration
     end
     samples = cat(first.(outputs)..., dims=3)
-    deltas = hcat(last.(outputs)...)'
-    Chains(samples, names), DataFrame(deltas, names)
+    deltas = hcat(map(output -> output[2], outputs)...)'
+    durations = map(output -> output[3], outputs)
+    Chains(samples, names; info = (; duration = sum(durations), durations)), DataFrame(deltas, names)
 end;
-problem = make_prior_sensitivity_problem(model_logpdf, init, 350000; f = untransform, proposal, burn_in=100000)
+problem = make_prior_sensitivity_problem(model_logpdf, init, 500_000; f = bodyfat_untransform, proposal, burn_in=100_000)
 out_primal, out_dual = raw_chains_to_summary(4,
-    () -> get_raw_chain_slim(problem; target="primal", alg_id="pruning_uniform_mvd"),
-    [obs_names[1:13]; "Intercept(c)"; "σ"]);
+    () -> get_raw_chain_slim(problem; target="primal", alg_id="pruning_mvd"),
+    [obs_names[1:13]; "Intercept(c)"; "σ"];
+    untransform=bodyfat_untransform);
 GC.gc();  # for people like me with puny computers
 
 describe(out_primal)  # prints summary diagnostics
 ````
 
 ````
-Progress:  50%|████████████████████▌                    |  ETA: 0:20:01[KProgress: 100%|█████████████████████████████████████████| Time: 0:41:17[K
-Chains MCMC chain (250000×15×4 Array{Float64, 3}):
+Progress:  50%|████████████████████▌                    |  ETA: 0:04:03[KProgress: 100%|█████████████████████████████████████████| Time: 0:07:58[K
+Chains MCMC chain (400000×15×4 Array{Float64, 3}):
 
-Iterations        = 1:1:250000
+Iterations        = 1:1:400000
 Number of chains  = 4
-Samples per chain = 250000
+Samples per chain = 400000
 parameters        = wrist, weight_kg, thigh, neck, knee, hip, height_cm, forearm, chest, biceps, ankle, age, abdomen, Intercept(c), σ
 
 Summary Statistics
     parameters      mean       std      mcse    ess_bulk     ess_tail      rhat   ess_per_sec
         Symbol   Float64   Float64   Float64     Float64      Float64   Float64       Missing
 
-         wrist   -1.4564    0.4703    0.0064   5343.6045   10541.8707    1.0009       missing
-     weight_kg   -0.0464    0.1439    0.0021   4576.4802    8982.8434    1.0009       missing
-         thigh    0.1793    0.1416    0.0021   4696.6760    9143.6933    1.0016       missing
-          neck   -0.4289    0.2233    0.0032   4849.5368    9926.4949    1.0005       missing
-          knee   -0.0360    0.2392    0.0035   4722.4860    9414.3225    1.0006       missing
-           hip   -0.1433    0.1422    0.0021   4546.8633    8396.7604    1.0006       missing
-     height_cm   -0.1090    0.0741    0.0011   4537.0325    8945.3232    1.0007       missing
-       forearm    0.2449    0.2044    0.0030   4553.6873    8669.6305    1.0003       missing
-         chest   -0.1165    0.1075    0.0016   4518.7600    9170.3104    1.0009       missing
-        biceps    0.1673    0.1694    0.0025   4528.9991    9041.2825    1.0025       missing
-         ankle    0.1380    0.2134    0.0031   4738.4249    9589.3020    1.0005       missing
-           age    0.0661    0.0311    0.0005   4628.3495    9001.8821    1.0010       missing
-       abdomen    0.8997    0.0904    0.0013   4512.0577    8782.7984    1.0009       missing
-  Intercept(c)   19.0866    0.2685    0.0040   4544.2035    9223.8700    1.0006       missing
-             σ    4.2641    0.1962    0.0033   3587.8731    6449.6245    1.0011       missing
+         wrist   -1.4494    0.4666    0.0050   8587.1461   16682.6486    1.0007       missing
+     weight_kg   -0.0423    0.1447    0.0017   7334.9388   13742.4786    1.0004       missing
+         thigh    0.1774    0.1445    0.0017   7186.7421   14068.3608    1.0026       missing
+          neck   -0.4261    0.2265    0.0026   7458.4225   15579.3618    1.0006       missing
+          knee   -0.0450    0.2385    0.0027   7549.5133   14775.6449    1.0004       missing
+           hip   -0.1421    0.1426    0.0017   7229.8578   14590.4263    1.0009       missing
+     height_cm   -0.1095    0.0740    0.0009   7256.8254   14373.3050    1.0003       missing
+       forearm    0.2423    0.2020    0.0024   7275.7058   14836.7740    1.0004       missing
+         chest   -0.1202    0.1083    0.0013   7221.5255   14057.7780    1.0012       missing
+        biceps    0.1657    0.1671    0.0020   7308.3497   14378.3040    1.0005       missing
+         ankle    0.1327    0.2135    0.0024   7608.1600   15043.6901    1.0006       missing
+           age    0.0665    0.0318    0.0004   7214.8598   14057.5100    1.0005       missing
+       abdomen    0.8990    0.0913    0.0011   7028.4371   14169.3409    1.0011       missing
+  Intercept(c)   19.0881    0.2713    0.0032   7254.2582   15647.2933    1.0003       missing
+             σ    4.2633    0.1951    0.0026   5709.5468   10978.9581    1.0011       missing
 
 Quantiles
     parameters      2.5%     25.0%     50.0%     75.0%     97.5%
         Symbol   Float64   Float64   Float64   Float64   Float64
 
-         wrist   -2.3716   -1.7744   -1.4582   -1.1424   -0.5220
-     weight_kg   -0.3326   -0.1426   -0.0450    0.0506    0.2345
-         thigh   -0.0986    0.0835    0.1798    0.2749    0.4566
-          neck   -0.8651   -0.5801   -0.4285   -0.2787    0.0118
-          knee   -0.5065   -0.1981   -0.0340    0.1266    0.4305
-           hip   -0.4198   -0.2391   -0.1449   -0.0492    0.1418
-     height_cm   -0.2547   -0.1588   -0.1089   -0.0591    0.0359
-       forearm   -0.1503    0.1061    0.2435    0.3807    0.6515
-         chest   -0.3287   -0.1888   -0.1158   -0.0438    0.0930
-        biceps   -0.1658    0.0534    0.1690    0.2821    0.4961
-         ankle   -0.2849   -0.0045    0.1403    0.2817    0.5530
-           age    0.0047    0.0452    0.0663    0.0872    0.1267
-       abdomen    0.7215    0.8394    0.9002    0.9604    1.0761
-  Intercept(c)   18.5598   18.9052   19.0855   19.2676   19.6148
-             σ    3.9052    4.1267    4.2562    4.3920    4.6687
+         wrist   -2.3693   -1.7632   -1.4479   -1.1347   -0.5333
+     weight_kg   -0.3239   -0.1398   -0.0437    0.0548    0.2445
+         thigh   -0.1068    0.0804    0.1775    0.2739    0.4632
+          neck   -0.8698   -0.5787   -0.4257   -0.2733    0.0183
+          knee   -0.5107   -0.2061   -0.0458    0.1144    0.4271
+           hip   -0.4209   -0.2385   -0.1418   -0.0455    0.1368
+     height_cm   -0.2549   -0.1596   -0.1094   -0.0595    0.0350
+       forearm   -0.1523    0.1056    0.2421    0.3796    0.6365
+         chest   -0.3338   -0.1927   -0.1200   -0.0472    0.0913
+        biceps   -0.1623    0.0538    0.1655    0.2765    0.4960
+         ankle   -0.2885   -0.0102    0.1347    0.2748    0.5516
+           age    0.0041    0.0451    0.0665    0.0880    0.1285
+       abdomen    0.7195    0.8374    0.8993    0.9611    1.0752
+  Intercept(c)   18.5577   18.9054   19.0875   19.2703   19.6233
+             σ    3.9002    4.1279    4.2568    4.3913    4.6624
 
 ````
 
@@ -292,63 +341,64 @@ the priors $`\beta_k \sim \mathsf{N}(0, (2.5 s_y/s_{x_k})^2)`$.
 
 ````julia
 model_logpdf2 = make_targetlogpdf(bodyfat, Xd, obs[:,14]; );
-problem2 = make_prior_sensitivity_problem(model_logpdf2, init, 350000; f = untransform, proposal, burn_in=100000)
+problem2 = make_prior_sensitivity_problem(model_logpdf2, init, 500_000; f = bodyfat_untransform, proposal, burn_in=100_000)
 out_primal2, out_dual2 = raw_chains_to_summary(4,
-    () -> get_raw_chain_slim(problem2; target="primal", alg_id="pruning_uniform_mvd"),
-    [obs_names[1:13]; "Intercept(c)"; "σ"]);
+    () -> get_raw_chain_slim(problem2; target="primal", alg_id="pruning_mvd"),
+    [obs_names[1:13]; "Intercept(c)"; "σ"];
+    untransform=bodyfat_untransform);
 GC.gc();
 
 describe(out_primal2)
 ````
 
 ````
-Progress:  50%|████████████████████▌                    |  ETA: 0:27:22[KProgress: 100%|█████████████████████████████████████████| Time: 0:54:17[K
-Chains MCMC chain (250000×15×4 Array{Float64, 3}):
+Progress:  50%|████████████████████▌                    |  ETA: 0:03:54[KProgress: 100%|█████████████████████████████████████████| Time: 0:07:47[K
+Chains MCMC chain (400000×15×4 Array{Float64, 3}):
 
-Iterations        = 1:1:250000
+Iterations        = 1:1:400000
 Number of chains  = 4
-Samples per chain = 250000
+Samples per chain = 400000
 parameters        = wrist, weight_kg, thigh, neck, knee, hip, height_cm, forearm, chest, biceps, ankle, age, abdomen, Intercept(c), σ
 
 Summary Statistics
-    parameters      mean       std      mcse    ess_bulk    ess_tail      rhat   ess_per_sec
-        Symbol   Float64   Float64   Float64     Float64     Float64   Float64       Missing
+    parameters      mean       std      mcse    ess_bulk     ess_tail      rhat   ess_per_sec
+        Symbol   Float64   Float64   Float64     Float64      Float64   Float64       Missing
 
-         wrist   -1.8435    0.5294    0.0078   4629.4759   8985.2577    1.0006       missing
-     weight_kg   -0.0231    0.1462    0.0022   4484.8827   8801.7256    1.0013       missing
-         thigh    0.1705    0.1484    0.0022   4515.7171   8549.5893    1.0005       missing
-          neck   -0.3963    0.2353    0.0035   4542.6987   8543.5962    1.0008       missing
-          knee   -0.0381    0.2486    0.0037   4416.4613   8780.6809    1.0016       missing
-           hip   -0.1477    0.1458    0.0022   4474.7226   8606.1196    1.0018       missing
-     height_cm   -0.1080    0.0743    0.0011   4507.6422   9222.4826    1.0014       missing
-       forearm    0.2737    0.2046    0.0030   4584.0792   9088.0731    1.0008       missing
-         chest   -0.1260    0.1066    0.0016   4637.5818   8506.7900    1.0016       missing
-        biceps    0.1761    0.1689    0.0025   4568.4714   8535.7824    1.0009       missing
-         ankle    0.1808    0.2195    0.0032   4564.6807   8946.8563    1.0014       missing
-           age    0.0742    0.0321    0.0005   4513.4652   8306.0372    1.0004       missing
-       abdomen    0.8933    0.0910    0.0014   4464.8705   8884.7800    1.0013       missing
-  Intercept(c)   19.0843    0.2717    0.0041   4361.5025   8634.6863    1.0011       missing
-             σ    4.2658    0.1979    0.0033   3524.5839   6163.1794    1.0036       missing
+         wrist   -1.8489    0.5359    0.0064   7091.4865   13961.6857    1.0004       missing
+     weight_kg   -0.0264    0.1492    0.0018   7055.4932   13810.1525    1.0014       missing
+         thigh    0.1700    0.1464    0.0017   7234.0116   14219.7701    1.0005       missing
+          neck   -0.3956    0.2369    0.0028   7100.4938   14156.7660    1.0006       missing
+          knee   -0.0428    0.2443    0.0029   7221.9044   13967.9111    1.0005       missing
+           hip   -0.1446    0.1443    0.0017   7153.4256   13973.2305    1.0006       missing
+     height_cm   -0.1075    0.0753    0.0009   7137.0731   13925.5319    1.0011       missing
+       forearm    0.2774    0.2096    0.0025   7172.2972   14185.9207    1.0014       missing
+         chest   -0.1267    0.1089    0.0013   7200.9526   14405.7582    1.0007       missing
+        biceps    0.1787    0.1718    0.0020   7208.3426   14609.5576    1.0014       missing
+         ankle    0.1764    0.2181    0.0025   7395.4540   14592.4867    1.0003       missing
+           age    0.0742    0.0320    0.0004   7353.6368   14855.9323    1.0012       missing
+       abdomen    0.8955    0.0912    0.0011   7193.3439   14657.9708    1.0005       missing
+  Intercept(c)   19.0848    0.2682    0.0031   7584.6096   16446.5050    1.0003       missing
+             σ    4.2685    0.1944    0.0026   5769.0242   10874.9316    1.0004       missing
 
 Quantiles
     parameters      2.5%     25.0%     50.0%     75.0%     97.5%
         Symbol   Float64   Float64   Float64   Float64   Float64
 
-         wrist   -2.8703   -2.2037   -1.8456   -1.4895   -0.7936
-     weight_kg   -0.3073   -0.1223   -0.0243    0.0756    0.2658
-         thigh   -0.1229    0.0710    0.1720    0.2702    0.4598
-          neck   -0.8563   -0.5554   -0.3962   -0.2383    0.0682
-          knee   -0.5266   -0.2045   -0.0389    0.1275    0.4513
-           hip   -0.4316   -0.2458   -0.1477   -0.0507    0.1397
-     height_cm   -0.2537   -0.1584   -0.1081   -0.0574    0.0369
-       forearm   -0.1268    0.1346    0.2741    0.4125    0.6737
-         chest   -0.3339   -0.1978   -0.1263   -0.0546    0.0846
-        biceps   -0.1598    0.0641    0.1767    0.2889    0.5070
-         ankle   -0.2499    0.0330    0.1805    0.3268    0.6144
-           age    0.0106    0.0528    0.0743    0.0957    0.1368
-       abdomen    0.7156    0.8322    0.8930    0.9548    1.0714
-  Intercept(c)   18.5528   18.9007   19.0834   19.2665   19.6222
-             σ    3.8994    4.1292    4.2578    4.3921    4.6776
+         wrist   -2.9041   -2.2092   -1.8468   -1.4856   -0.7993
+     weight_kg   -0.3166   -0.1277   -0.0275    0.0749    0.2667
+         thigh   -0.1188    0.0721    0.1699    0.2684    0.4580
+          neck   -0.8624   -0.5560   -0.3930   -0.2349    0.0654
+          knee   -0.5232   -0.2058   -0.0424    0.1197    0.4366
+           hip   -0.4273   -0.2414   -0.1452   -0.0478    0.1402
+     height_cm   -0.2541   -0.1585   -0.1075   -0.0564    0.0398
+       forearm   -0.1326    0.1360    0.2767    0.4178    0.6893
+         chest   -0.3379   -0.2006   -0.1271   -0.0537    0.0883
+        biceps   -0.1581    0.0633    0.1785    0.2943    0.5168
+         ankle   -0.2550    0.0309    0.1769    0.3236    0.6024
+           age    0.0114    0.0526    0.0744    0.0958    0.1365
+       abdomen    0.7167    0.8342    0.8952    0.9570    1.0740
+  Intercept(c)   18.5609   18.9040   19.0837   19.2651   19.6152
+             σ    3.9108    4.1330    4.2608    4.3965    4.6669
 
 ````
 
@@ -381,10 +431,10 @@ function dual_plot(l, before, after; kwargs...)
     color = Makie.wong_colors()
 
     barplot!(ax, ix .- dodge, df_before.mean; direction=:x, width=0.5, strokewidth=1, color=(color[1], 0.33), strokecolor=color[1])
-    errorbars!(ax, df_before.mean, ix .- dodge, df_before.std ./ √(nrow(df_before)); direction=:x, whiskerwidth=10, color=color[1])
+    errorbars!(ax, df_before.mean, ix .- dodge, df_before.std ./ √(nrow(before)); direction=:x, whiskerwidth=10, color=color[1])
 
     barplot!(ax, ix .+ dodge, df_after.mean; direction=:x, width=0.5, strokewidth=1, color=(color[2], 0.33), strokecolor=color[2])
-    errorbars!(ax, df_after.mean, ix .+ dodge, df_after.std ./ √(nrow(df_after)); direction=:x, whiskerwidth=10, color=color[2])
+    errorbars!(ax, df_after.mean, ix .+ dodge, df_after.std ./ √(nrow(after)); direction=:x, whiskerwidth=10, color=color[2])
 end;
 f = Figure(size=(350,450))
 dual_plot(f[1,1], out_dual, out_dual2)
@@ -403,6 +453,21 @@ dual_plot(f[1,2], out_dual, out_dual2)
 Label(f[1,1,TopLeft()], "A", font=:bold, halign = :left)
 Label(f[1,2,TopLeft()], "B", font=:bold, halign = :left)
 save("../assets/prior_sensitivity.pdf", f);
+
+# Timings
+primal_timing = get_primal_timing(problem; target="primal")
+derivative_timing = get_derivative_timing(
+    problem; target="primal", backend=backend)
+
+(;
+    primal_ns = primal_timing.ns,
+    derivative_ns = derivative_timing.ns,
+    ratio = derivative_timing.ns / primal_timing.ns,
+)
+````
+
+````
+(primal_ns = 13915.342818, derivative_ns = 226732.531002, ratio = 16.29370788542222)
 ````
 
 ---

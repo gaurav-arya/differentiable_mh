@@ -17,25 +17,28 @@ using Turing
 using ProgressMeter
 using CairoMakie
 import Random
-import Analysis: take_samples, get_raw_chain_slim
+import Analysis: take_samples, get_primal_chain_slim, get_raw_chain_slim, get_primal_timing, get_derivative_timing
 import Analysis
 
-# Set up StochasticAD to use the stochastic derivatives in the paper
-backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
-alg = StochasticAD.ForwardAlgorithm(backend)
+# Set up StochasticAD to use importance sampled pruning
+weights_st_backend = StrategyWrapperFIsBackend(
+    PrunedFIsBackend(Val(:weights)), StochasticAD.StraightThroughStrategy())
+dictfis_st_backend = StrategyWrapperFIsBackend(
+    DictFIsBackend(), StochasticAD.StraightThroughStrategy())
 ;
 
 
 function model_pdf(x, θ)
-    out = (1 - θ) * StochasticAD.propagate(x -> norm(x) < 1, x) + θ * StochasticAD.propagate(x -> 3 < norm(x) < 5, x)
+    r2 = LinearAlgebra.norm_sqr(x)
+    out = (1 - θ) * StochasticAD.propagate(r2 -> r2 < 1, r2) + θ * StochasticAD.propagate(r2 -> 9 < r2 < 25, r2)
     out
 end
 
 # Run 1D chain
 Random.seed!(20240408);
 Random.seed!(StochasticAD.RNG, 20240528);
-problem = make_data_contamination_problem(model_pdf, [0.0], 1000; f = x -> norm(x)^2, burn_in=500, theta=1e-6);
-data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_uniform_mvd", get_chain = Analysis._get_chain_full);
+problem = make_data_contamination_problem(model_pdf, [0.0], 1000; f = LinearAlgebra.norm_sqr, burn_in=500, theta=1e-6);
+data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_mvd", get_chain = Analysis._get_chain_full);
 ````
 
 Trajectory 1D
@@ -76,8 +79,8 @@ Random.seed!(StochasticAD.RNG, 1234);
 burn_in = 1000
 n = 2000
 
-problem = make_data_contamination_problem(model_pdf, [0.0, 0.0], n; f = x -> norm(x)^2, burn_in, theta=1e-6)
-data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_uniform_mvd", get_chain = Analysis._get_chain_full)
+problem = make_data_contamination_problem(model_pdf, [0.0, 0.0], n; f = LinearAlgebra.norm_sqr, burn_in, theta=1e-6)
+data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_mvd", get_chain = Analysis._get_chain_full)
 
 # plot 2d
 
@@ -120,7 +123,7 @@ for theta in thetas
     ests = []
     for i in 1:nruns
         problem = make_data_contamination_problem(model_pdf, [0.0], 1000; f = x -> norm(x)^2, burn_in=500, theta = theta)
-        data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_uniform_mvd", get_chain = Analysis._get_chain_full)
+        data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_mvd", get_chain = Analysis._get_chain_full)
         primals = map(x -> StochasticAD.value.(x), data.chain[500:1000])
         est = StochasticAD.delta(data.ret)
         push!(ests, est)
@@ -132,11 +135,11 @@ end
 
 ````
 ┌ Warning: Assignment to `problem` in soft scope is ambiguous because a global variable by the same name exists: `problem` will be treated as a new local. Disambiguate by using `local problem` to suppress this warning or `global problem` to assign to the existing global variable.
-└ @ /proj/pdmps/repos/dmh/docs/src/tutorials/analyze_data_contamination.md:11
+└ @ ~/repos/differentiable_mh/docs/src/tutorials/analyze_data_contamination.md:11
 ┌ Warning: Assignment to `data` in soft scope is ambiguous because a global variable by the same name exists: `data` will be treated as a new local. Disambiguate by using `local data` to suppress this warning or `global data` to assign to the existing global variable.
-└ @ /proj/pdmps/repos/dmh/docs/src/tutorials/analyze_data_contamination.md:12
+└ @ ~/repos/differentiable_mh/docs/src/tutorials/analyze_data_contamination.md:12
 ┌ Warning: Assignment to `primals` in soft scope is ambiguous because a global variable by the same name exists: `primals` will be treated as a new local. Disambiguate by using `local primals` to suppress this warning or `global primals` to assign to the existing global variable.
-└ @ /proj/pdmps/repos/dmh/docs/src/tutorials/analyze_data_contamination.md:13
+└ @ ~/repos/differentiable_mh/docs/src/tutorials/analyze_data_contamination.md:13
 theta = 1.0e-6
 theta = 0.01
 theta = 0.02
@@ -176,8 +179,8 @@ score_stds = []
 for theta in thetas
     ests = []
     for i in 1:nruns
-        problem = make_data_contamination_problem(model_pdf, [0.0], 1000; f = x -> norm(x)^2, burn_in=500, theta = theta)
-        data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_uniform_mvd")
+        problem = make_data_contamination_problem(model_pdf, [0.0], 1000; f = LinearAlgebra.norm_sqr, burn_in=500, theta = theta)
+        data = get_raw_chain_slim(problem; target="primal", alg_id="pruning_mvd")
         primals = map(x -> StochasticAD.value(x[1]), data.chain[500:1000])
         baseline = mean(map(x -> norm(x)^2, primals))
         scores = map(x -> (z = score(x, theta; baseline); if isnan(z) error(x) end; z), primals)
@@ -194,27 +197,27 @@ score_means
 
 ````
 21-element Vector{Any}:
-  0.0014323919598605705
+  0.001432391959860581
  30.762529106215144
- 27.414886189047035
- 33.3262268338436
+ 27.41488618904704
+ 33.326226833843606
  26.679666229489342
  29.03851515490783
  27.143497243822296
- 27.050266654908604
- 27.589290758427204
- 24.505213499976136
- 25.84452729516681
- 24.45349915313026
- 25.73966284250595
- 22.968425015263136
+ 27.0502666549086
+ 27.58929075842721
+ 24.50521349997613
+ 25.844527295166813
+ 24.453499153130267
+ 25.739662842505954
+ 22.968425015263144
  22.306628465308496
- 23.0838652918737
- 21.92200028590771
- 23.35438593189641
- 22.93423106161103
- 21.790288744557923
- 20.94048278809247
+ 23.083865291873703
+ 21.922000285907714
+ 23.354385931896402
+ 22.934231061611026
+ 21.79028874455792
+ 20.940482788092467
 ````
 
 Plot variance comparison
@@ -275,6 +278,31 @@ Label(fig[2,1,TopLeft()], "C", font=:bold, halign = :left)
 colgap!(fig.layout, 30)
 
 save("../assets/data_contamination.pdf", fig);
+````
+
+Timing data for the estimator
+
+````julia
+Random.seed!(1234);
+Random.seed!(StochasticAD.RNG, 1234);
+problem = make_data_contamination_problem(model_pdf, [0.0, 0.0], 10000; f = LinearAlgebra.norm_sqr, burn_in = 10000, theta=1e-6)
+primal_timing = get_primal_timing(problem; target="primal")
+derivative_timing = get_derivative_timing(
+    problem; target="primal", backend=weights_st_backend)
+dictfis_timing = get_derivative_timing(
+    problem; target="primal", backend=dictfis_st_backend)
+
+(;
+    primal_ns = primal_timing.ns,
+    derivative_ns = derivative_timing.ns,
+    derivative_dictfis_ns = dictfis_timing.ns,
+    ratio = derivative_timing.ns / primal_timing.ns,
+    dictfis_ratio = dictfis_timing.ns / primal_timing.ns,
+)
+````
+
+````
+(primal_ns = 169.605, derivative_ns = 11715.165, derivative_dictfis_ns = 1.2331956567e6, ratio = 69.07322897320245, dictfis_ratio = 7270.986449102326)
 ````
 
 ---

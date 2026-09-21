@@ -19,8 +19,11 @@ function mh(get_logpdf, proposal, x0; iters = 200, burn_in = 50, f, f_init=0.0, 
     for i in 1:iters
         x_proposed = rand(MHProposalDistribution(x, proposal, proposal_coupling))
         logα = min(0.0, get_logpdf(x_proposed) - get_logpdf(x) + logratio_proposal(proposal, x, x_proposed))
-        coin = rand(Bernoulli(exp(logα)))
-        x = x + (x_proposed - x) * coin #[x, x_proposed][1 + coin]
+        # Use the typed constructor so that Distributions does not try to
+        # evaluate the [0, 1] check on a StochasticTriple probability.
+        coin_probability = exp(logα)
+        coin = rand(Bernoulli{typeof(coin_probability)}(coin_probability))
+        x = _mh_update(x, x_proposed, coin)
         fx = f(x)
         if i > burn_in
             S += StochasticAD.structural_map(StochasticAD.smooth_triple, fx)
@@ -55,7 +58,7 @@ function mh_score(get_logpdf, proposal, x0; iters = 200, burn_in = 50, f, f_init
         x_proposed = rand(MHProposalDistribution(x, proposal, nothing)) # coupling irrelevant here
         logα = min(0.0, get_logpdf(x_proposed) - get_logpdf(x) + logratio_proposal(proposal, x, x_proposed))
         coin = rand(Bernoulli(exp(logα)))
-        x = x + (x_proposed - x) * coin #[x, x_proposed][1 + coin]
+        x = _mh_update(x, x_proposed, coin)
         fx = f(x)
         prob = (StochasticAD.value(coin) == 1) ? exp(α) : 1-exp(α)
         w += StochasticAD.delta(log(prob))
@@ -87,7 +90,7 @@ function mh_basic_kernel(x, kernel_params)
     x_proposed = rand(MHProposalDistribution(x, proposal, proposal_coupling))
     logα = min(0.0, get_logpdf(x_proposed) - get_logpdf(x) + logratio_proposal(proposal, x, x_proposed))
     coin = rand(Bernoulli(exp(logα)))
-    x = x + (x_proposed - x) * coin #[x, x_proposed][1 + coin]
+    x = _mh_update(x, x_proposed, coin)
     return x
 end
 
@@ -101,6 +104,12 @@ function mh_kernel_init(args...; burn_in, f, f_init=0.0, mh_basic_kernel_init = 
     x0, n, mh_kernel_params = mh_basic_kernel_init(args...; kwargs...) 
     return (x0, f_init, 0), n, (; mh_kernel_params, f, burn_in)
 end
+
+# Broadcasting here elides temporary allocations, which squeezes out a few
+# percent of performance :)
+_mh_update(x::AbstractArray, x_proposed::AbstractArray, coin) =
+    x .+ (x_proposed .- x) .* coin
+_mh_update(x, x_proposed, coin) = x + (x_proposed - x) * coin
 
 """
     mh_kernel(x, kernel_params)

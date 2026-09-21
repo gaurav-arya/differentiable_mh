@@ -43,19 +43,18 @@ struct MaximumReflectionProposalCoupling <: AbstractMHProposalCoupling end
 stdnormlogpdf(x) = -(LinearAlgebra.norm_sqr(x) + length(x)*log(2π))/2
 
 # Monkey patch because vectors of stochastic triples don't like the branching norm function
-LinearAlgebra.norm_sqr(xs::Vector{StochasticTriple{T,V,FI}}) where {T,V,FI} =
+LinearAlgebra.norm_sqr(xs::Vector{StochasticAD.StochasticTriple{T,V,FI}}) where {T,V,FI} =
    StochasticAD.propagate(LinearAlgebra.norm_sqr, xs; keep_deltas = Val(true))
 
-# Maximal reflection coupling with pathwise IPA.
+## Maximal reflection coupling with pathwise IPA.
 # We have simplified since the RWMH proposal is symmetric.
 function coupled_proposal(rng::Random.AbstractRNG, proposal::AbstractMHProposal{T}, ::MaximumReflectionProposalCoupling, y, x, x_prop) where {T}
-    if !(proposal isa RandomWalkMHProposal) && proposal.step_distribution isa Union{Normal, MvNormal}
+    if !(proposal isa RandomWalkMHProposal && proposal.step_distribution isa Union{Normal, MvNormal})
         error("GaussianRandomWalkProposalCoupling only supports Random Walk MH proposals with Gaussian steps.")
     end
     if T <: Real
         @argcheck proposal.step_distribution isa Normal
         xlogp = logpdf_proposal(proposal, x, x_prop)
-        # TODO: think more about RNG that we use here: maybe coupled_proposal should take a separate RNG argument as part of the interface?
         if log(rand(rng)) + xlogp ≤ logpdf_proposal(proposal, y, x_prop)
             y_prop = x_prop
         else
@@ -83,4 +82,3 @@ function coupled_proposal(rng::Random.AbstractRNG, proposal::AbstractMHProposal{
         error("Unsupported state space type $T.")
     end
 end
-

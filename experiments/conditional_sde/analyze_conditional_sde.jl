@@ -20,8 +20,8 @@ import Random
 Random.seed!(20250805);
 Random.seed!(StochasticAD.RNG, 20250805 + 1);
 
-# Set up StochasticAD to use the stochastic derivatives in the paper
-backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
+# Set up StochasticAD to use importance sampled pruning
+backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:weights)), StochasticAD.StraightThroughStrategy())  # aka pruning MVD
 alg = StochasticAD.ForwardAlgorithm(backend)
 ;
 

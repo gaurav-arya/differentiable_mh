@@ -18,6 +18,7 @@ using PDMats
 using MCMCChains
 import Random
 import Analysis: take_samples
+import BenchmarkTools
 
 Random.seed!(20240403);
 Random.seed!(StochasticAD.RNG, 20240528);
@@ -41,25 +42,23 @@ In the paper we argue consistency under some fairly weak moment assumptions on t
 ````julia
 problem = make_mh_tuning_problem(100000; target=Normal(0,1))
 problem.targets["primal"].X(problem.settings.p, problem.settings)
-samples = take_samples(problem, discrete_alg_flags = ["pruning","mvd","uniform"], store_samples = true)
+samples = take_samples(problem, discrete_alg_flags = ["pruning","mvd"], store_samples = true)
 ````
 
 ````
-5×10 DataFrame
- Row │ alg_name               target_name  mean         std         stderr       alg_id               target_id  alg                                target                             samples
-     │ String                 String       Float64      Float64     Float64      String               String     Any                                Any                                Any
-─────┼───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-   1 │ Primal                 Primal        0.628235    0.00835852  0.000264319  primal               primal     (name = "Primal", flags = Any[])   (X = X, flags = Any[], name = "P…  [0.639747, 0.629159, 0.627688, 0…
-   2 │ Pruning MVD            Primal       -0.00537649  0.0156264   0.000494151  pruning_mvd          primal     (backend = StrategyWrapperFIsBac…  (X = X, flags = Any[], name = "P…  [-0.0238864, -0.0077663, -0.0330…
-   3 │ Pruning                Primal       -0.00462993  0.0156657   0.000495392  pruning              primal     (backend = PrunedFIsBackend{Val{…  (X = X, flags = Any[], name = "P…  [-0.0120034, -0.0162049, -0.0083…
-   4 │ Pruning Uniformly      Primal       -0.00452852  0.0223878   0.000707965  pruning_uniform      primal     (backend = PrunedFIsBackend{Val{…  (X = X, flags = Any[], name = "P…  [-0.00944976, -0.00470911, -0.02…
-   5 │ Pruning Uniformly MVD  Primal       -0.00555474  0.0435447   0.001377     pruning_uniform_mvd  primal     (backend = StrategyWrapperFIsBac…  (X = X, flags = Any[], name = "P…  [-0.0440492, -0.00374949, -0.031…
+3×10 DataFrame
+ Row │ alg_name     target_name  mean         std         stderr       alg_id       target_id  alg                                target                             samples
+     │ String       String       Float64      Float64     Float64      String       String     Any                                Any                                Any
+─────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   1 │ Primal       Primal        0.628235    0.00835852  0.000264319  primal       primal     (name = "Primal", flags = Any[])   (X = X, flags = Any[], name = "P…  [0.639747, 0.629159, 0.627688, 0…
+   2 │ Pruning MVD  Primal       -0.00430795  0.0150884   0.000477137  pruning_mvd  primal     (backend = StrategyWrapperFIsBac…  (X = X, flags = Any[], name = "P…  [-0.0170316, -0.015038, -0.02192…
+   3 │ Pruning      Primal       -0.00531514  0.0155009   0.000490182  pruning      primal     (backend = PrunedFIsBackend{Val{…  (X = X, flags = Any[], name = "P…  [-0.0108509, -0.0247896, -0.0089…
 ````
 
 An example histogram of the estimator:
 
 ````julia
-pruning_samples = only(samples[samples[!, "alg_id"] .== "pruning_uniform_mvd", :]).samples
+pruning_samples = only(samples[samples[!, "alg_id"] .== "pruning_mvd", :]).samples
 fig = Figure()
 ax = Axis(fig[1,1])
 hist!(ax, pruning_samples; normalization = :pdf)
@@ -74,10 +73,10 @@ acceptance rate is achieved for a step size σ = 2.38 * √Var(X) for Gaussian t
 We'll show this value in the plot to compare with the minimum.
 
 ````julia
-function plot_autocov_estimate_curve(target, θs; N = 250000, x0 = 0.0, θref = nothing, nsims = 100)
+function plot_autocov_estimate_curve(target, θs; N = 10000, x0 = 0.0, θref = nothing, nsims = 500)
     ##' Collect samples for a range of θ values
     problems = map(θ -> make_mh_tuning_problem(N; θ, target, x0), θs);
-    all_samples = take_samples.(problems; discrete_alg_flags = "pruning_uniform_mvd", store_samples = false, nsims);
+    all_samples = take_samples.(problems; discrete_alg_flags = "pruning_mvd", store_samples = false, nsims);
 
     #=
     ##' Prettier title
@@ -96,7 +95,7 @@ function plot_autocov_estimate_curve(target, θs; N = 250000, x0 = 0.0, θref = 
     linkxaxes!(ax1, ax2)
 
     primal_samples = map(samples -> only(samples[samples[!, "alg_id"] .== "primal", :]), all_samples)
-    deriv_samples = map(samples -> only(samples[samples[!, "alg_id"] .== "pruning_uniform_mvd", :]), all_samples)
+    deriv_samples = map(samples -> only(samples[samples[!, "alg_id"] .== "pruning_mvd", :]), all_samples)
     isnothing(θref) && (θref = 2.38 * std(target))
 
     scatterlines!(ax1, θs, map(r -> r.mean, primal_samples), color = :black)
@@ -155,7 +154,7 @@ Here bypassing the problem interface just to speed things up a bit.
 function opt_autocov(target, θ0, x0; N=200000, opt_iters=400, optimizer=Adam(0.01))
     θ = Float64[θ0]
     proposal_coupling = MaximumReflectionProposalCoupling()
-    backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
+    backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:weights)), StochasticAD.StraightThroughStrategy())  # aka weighted pruning MVD
 
     θ_st = stochastic_triple(θ[1]; backend)
     proposal = RandomWalkMHProposal{typeof(x0 * θ_st)}(Normal(0, θ_st))
@@ -184,7 +183,7 @@ opt_autocov(Normal(0,1), 1.5, 0.0)
 ````
 
 ````
-(2.409383425918128, 0.6310815033375665, -0.005455312296832552)
+(2.4025498705997617, 0.6206710706465696, -0.016633490517115126)
 ````
 
 We should be able to "shape" the proposal and tune multiple parameters.
@@ -193,11 +192,12 @@ To do so efficiently at scale requires reverse mode.
 ````julia
 function opt_autocov_reverse(
         target, θ::Vector{Float64}, x0;
-        N=250000, opt_iters=800, optimizer=Adam(0.005),
+        ##N=500000, opt_iters=800, optimizer=Adam(1e-2),
+        N=5000, opt_iters=80000, optimizer=Adam(1e-3),
         video=nothing, image=nothing,
         full_parameterization = Val(false), forward_mode = Val(false),
         proposal_coupling = MaximumReflectionProposalCoupling(),
-        seeds = (20240403, 20240528))
+        seeds = (20240403, 20240528), timed = Val(false))
     Random.seed!(seeds[1]);
     Random.seed!(StochasticAD.RNG, seeds[2]);
 
@@ -209,7 +209,6 @@ function opt_autocov_reverse(
             return MvNormal(zero(x0), Σ)
         end
         function derivative_f_chol(p)
-            # TODO full parameterization would require something like this
             proposal = RandomWalkMHProposal{typeof(x0 .* p[1])}(make_prop_chol(p))
             MHTuningProblem.mh_acf(target, proposal, x0; iters=N, proposal_coupling).sample_autocorr
         end
@@ -227,7 +226,7 @@ function opt_autocov_reverse(
         make_prop = make_prop_diag
     end
 
-    backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:wins)), StochasticAD.StraightThroughStrategy())  # aka uniformly pruning MVD
+    backend = StrategyWrapperFIsBackend(PrunedFIsBackend(Val(:weights)), StochasticAD.StraightThroughStrategy())  # aka weighted pruning MVD
     if forward_mode isa Val{true}
         stad_alg = StochasticAD.ForwardAlgorithm(backend)
     else
@@ -260,10 +259,11 @@ function opt_autocov_reverse(
     progress = Progress(opt_iters; showspeed=true)
 
     # Run the optimizer
+    opt_start = time_ns()
     if !isnothing(video)
         record(fig, video, 1:opt_iters; framerate=10) do _
             dγdθ = derivative_estimate(derivative_f, θ, stad_alg)
-
+            ##θ_prev = copy(θ)
             Optimisers.update!(state, θ, dγdθ)
             next!(progress; showvalues = [(:θ,θ), (:dγdθ,dγdθ)])
             θ_observable[] = θ
@@ -271,6 +271,7 @@ function opt_autocov_reverse(
     else
         for _ in 1:opt_iters
             dγdθ = derivative_estimate(derivative_f, θ, stad_alg)
+            ##θ_prev = copy(θ)
             Optimisers.update!(state, θ, dγdθ)
             next!(progress; showvalues = [(:θ,θ), (:dγdθ,dγdθ)])
         end
@@ -279,96 +280,150 @@ function opt_autocov_reverse(
             ##autolimits!(ax1)  ## Broke in a later version of Makie?
         end
     end
+    duration = (time_ns() - opt_start) / 1e9
 
     # Collect some statistics
     proposal = RandomWalkMHProposal{typeof(x0)}(make_prop(θ))
     outputs = map(1:4) do _
-        raw = last(mh(Base.Fix1(logpdf, target), proposal, x0; iters=N, burn_in=0, f=identity, f_init=zero(x0), get_samples=Val(true)))
+        raw = last(mh(Base.Fix1(logpdf, target), proposal, x0; iters=500_000, burn_in=0, f=identity, f_init=zero(x0), get_samples=Val(true)))
         reduce(hcat, raw)'
     end
     chain_stats = Chains(cat(outputs..., dims=3))
     acc = 1 - mean(mapslices(iszero, diff(chain_stats.value; dims=1); dims=2))
 
+    # Timings
+    if timed isa Val{true}
+        duration_primal = BenchmarkTools.@btimed ($derivative_f)($θ)
+        duration_derivative = BenchmarkTools.@btimed derivative_estimate($derivative_f, $θ, $stad_alg)
+        timings = (; full=duration, primal=duration_primal.time, derivative=duration_derivative.time, ratio=duration_derivative.time/duration_primal.time)
+    else
+        timings = nothing
+    end
+
     γ = derivative_f(θ)
-    return (; θ, γ, dγdθ, fig, chain_stats, acc)
+    return (; θ, γ, dγdθ, fig, chain_stats, acc, timings)
 end;
 ````
 
 Independent Gaussian with different scales, should work without problems.
 Theory tells us to expect [1.68; 3.36] by transforming the optimal isotropic proposal with the scales.
 Similarly to the 1D problem it seems the objective is quite flat close to the optimum, so we don't quite recover the ideal scale but close enough.
+Here, we run few long but expensive chains.
 
 ````julia
 out = opt_autocov_reverse(
     MvNormal(zeros(2), Diagonal([1.0;4.0])),
-    N=500_000, [2.0;2.0], zeros(2); forward_mode = Val(true),
+    [2.0;2.0], zeros(2); forward_mode = Val(true), timed = Val(true),
+    N=500000, opt_iters=800, optimizer=Adam(1e-2),
     image=true); #video="PT_Gaussian_scales.mp4")
 out.θ
 ````
 
 ````
 2-element Vector{Float64}:
- 1.7827561235324703
- 3.0154047044262082
+ 1.764438344274422
+ 3.3662941753063755
+````
+
+````julia
+out.timings
+````
+
+````
+(full = 1913.826573674, primal = 0.261792637, derivative = 2.248435069, ratio = 8.588610798095136)
 ````
 
 ````julia
 out.fig
 ````
-![](analyze_mh_tuning_problem-25.png)
+![](analyze_mh_tuning_problem-26.png)
 
-Something bimodal.
+Again the independent Gaussian, but this time we run many short noisy chains.
 
 ````julia
 out = opt_autocov_reverse(
-    MixtureModel(MvNormal, [([-2.5;0.0], 1.0*I), ([+2.5;0.0], 1.0*I)], [0.5, 0.5]),
-    N=500_000, 2.5 .* ones(2), zeros(2); forward_mode = Val(true),
+    MvNormal(zeros(2), Diagonal([1.0;4.0])),
+    [2.0;2.0], zeros(2); forward_mode = Val(true), timed = Val(true),
+    N=5000, opt_iters=80000, optimizer=Adam(1e-3),
     image=true);
 out.θ
 ````
 
 ````
 2-element Vector{Float64}:
- 3.3339040271970832
- 2.0231240591700295
+ 1.743431503437185
+ 3.3269445174165053
+````
+
+````julia
+out.timings
+````
+
+````
+(full = 2004.608811973, primal = 0.002082987, derivative = 0.01728188, ratio = 8.296681640355892)
+````
+
+Something bimodal.
+
+````julia
+out = opt_autocov_reverse(
+    MixtureModel(MvNormal, [([-2.5;0.0], 1.0*I), ([+2.5;0.0], 1.0*I)], [0.5, 0.5]),
+    2.5 .* ones(2), zeros(2); forward_mode = Val(true),
+    image=true);
+out.θ
+````
+
+````
+2-element Vector{Float64}:
+ 3.9646700302155367
+ 1.7862460441710475
 ````
 
 ````julia
 out.fig
 ````
-![](analyze_mh_tuning_problem-28.png)
+![](analyze_mh_tuning_problem-32.png)
 
 Introducing correlations, but not yet full parameters
 
 ````julia
 opt_autocov_reverse(
     MvNormal(zeros(2), Symmetric([1.0 0.5; 0.5 1.0])),
-    N=500_000, 2.0 .* ones(2), zeros(2); forward_mode = Val(true),
+    2.0 .* ones(2), zeros(2); forward_mode = Val(true),
     image=true).fig #video="PT_Gaussian_corr.mp4")
 ````
-![](analyze_mh_tuning_problem-30.png)
+![](analyze_mh_tuning_problem-34.png)
 
 Now with control over correlations as well. Scaling and rotating suggests [1.68291;0.841457;1.45745]
 
 ````julia
 out = opt_autocov_reverse(
     MvNormal(zeros(2), Symmetric([1.0 0.5; 0.5 1.0])),
-    N=500_000, [2.0;0.0;2.0], zeros(2); forward_mode = Val(true), full_parameterization = Val(true),
+    [2.0;0.0;2.0], zeros(2);
+    forward_mode = Val(true), full_parameterization = Val(true), timed = Val(true),
     image=true); #video="PT_Gaussian_chol.mp4")
 out.θ
 ````
 
 ````
 3-element Vector{Float64}:
- 1.6495181313298504
- 0.8856649600482516
- 1.5103508985937355
+ 1.702051836351021
+ 0.818213184420045
+ 1.4720232244296083
 ````
 
 ````julia
 out.fig
 ````
-![](analyze_mh_tuning_problem-33.png)
+![](analyze_mh_tuning_problem-37.png)
+
+````julia
+out.timings
+````
+
+````
+(full = 4594.445038594, primal = 0.003341143, derivative = 0.036239055, ratio = 10.84630469273539)
+````
 
 Check the chain diagnostics
 
@@ -388,15 +443,15 @@ Summary Statistics
   parameters      mean       std      mcse      ess_bulk      ess_tail      rhat   ess_per_sec
       Symbol   Float64   Float64   Float64       Float64       Float64   Float64       Missing
 
-     param_1   -0.0032    1.0011    0.0020   259771.6698   340249.8490    1.0000       missing
-     param_2   -0.0013    1.0014    0.0019   279468.5252   358201.8442    1.0000       missing
+     param_1   -0.0012    0.9995    0.0019   269156.6279   347095.7392    1.0000       missing
+     param_2   -0.0017    1.0005    0.0019   265791.2598   340315.0019    1.0000       missing
 
 Quantiles
   parameters      2.5%     25.0%     50.0%     75.0%     97.5%
       Symbol   Float64   Float64   Float64   Float64   Float64
 
-     param_1   -1.9648   -0.6800   -0.0011    0.6735    1.9562
-     param_2   -1.9695   -0.6770   -0.0002    0.6743    1.9588
+     param_1   -1.9570   -0.6787    0.0003    0.6735    1.9540
+     param_2   -1.9638   -0.6783   -0.0009    0.6751    1.9571
 
 ````
 
@@ -405,7 +460,7 @@ out.acc
 ````
 
 ````
-0.3534047068094136
+0.3526102052204104
 ````
 
 ````julia
@@ -431,22 +486,30 @@ Distributions.mean(::DualMoon) = zeros(2)
 out = opt_autocov_reverse(
     DualMoon(),
     [2.0;0.0;2.0], zeros(2);
-    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
+    forward_mode = Val(true), full_parameterization = Val(true), timed = Val(true),
     image=true); #video="PT_dualmoon.mp4")
 out.θ
 ````
 
 ````
 3-element Vector{Float64}:
-  2.2683971391632607
- -0.08199335803281955
-  2.203770748776915
+  2.4921780191762606
+ -0.9116472225705095
+  2.2653764910270353
 ````
 
 ````julia
 out.fig
 ````
-![](analyze_mh_tuning_problem-40.png)
+![](analyze_mh_tuning_problem-45.png)
+
+````julia
+out.timings
+````
+
+````
+(full = 4416.573168754, primal = 0.002399163, derivative = 0.036577625, ratio = 15.245994123784003)
+````
 
 ````julia
 describe(out.chain_stats)
@@ -461,18 +524,18 @@ Samples per chain = 500000
 parameters        = param_1, param_2
 
 Summary Statistics
-  parameters      mean       std      mcse     ess_bulk      ess_tail      rhat   ess_per_sec
-      Symbol   Float64   Float64   Float64      Float64       Float64   Float64       Missing
+  parameters      mean       std      mcse      ess_bulk      ess_tail      rhat   ess_per_sec
+      Symbol   Float64   Float64   Float64       Float64       Float64   Float64       Missing
 
-     param_1    0.0027    1.6022    0.0060   81330.8326   165939.0202    1.0000       missing
-     param_2   -0.0034    1.5994    0.0061   77359.3878   161725.3467    1.0000       missing
+     param_1    0.0048    1.5992    0.0052   102373.8238   163863.3698    1.0001       missing
+     param_2   -0.0077    1.6010    0.0053    99457.3080   162466.2357    1.0000       missing
 
 Quantiles
   parameters      2.5%     25.0%     50.0%     75.0%     97.5%
       Symbol   Float64   Float64   Float64   Float64   Float64
 
-     param_1   -2.5267   -1.4966    0.0041    1.4981    2.5270
-     param_2   -2.5240   -1.4962   -0.0085    1.4918    2.5256
+     param_1   -2.5250   -1.4902    0.0135    1.5005    2.5243
+     param_2   -2.5233   -1.5029   -0.0166    1.4919    2.5206
 
 ````
 
@@ -481,7 +544,7 @@ out.acc
 ````
 
 ````
-0.1628458256916514
+0.1573108146216292
 ````
 
 ````julia
@@ -551,24 +614,32 @@ Distributions.mean(R::Rosenbrock) = [R.μ; R.μ^2 + 1/(2 * R.a)]
 
 out = opt_autocov_reverse(
     Rosenbrock(),
-    optimizer=Adam(0.003),
-    0.6 .* [1.0;0.0;1.0], [0.1;0.0];
-    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
+    0.6 .* [1.0;0.0;1.0], [0.1,0.0];
+    N=15000, optimizer=Adam(3e-4), #Adam(3e-3),
+    forward_mode = Val(true), full_parameterization = Val(true), timed = Val(true),
     image=true); #video="PT_Rosenbrock.mp4")
 out.θ
 ````
 
 ````
 3-element Vector{Float64}:
- 0.5681524775435879
- 0.07540825230254587
- 0.6556886874573192
+  0.5058655004007097
+ -0.10769318004179804
+  0.6564074755412317
 ````
 
 ````julia
 out.fig
 ````
-![](analyze_mh_tuning_problem-49.png)
+![](analyze_mh_tuning_problem-55.png)
+
+````julia
+out.timings
+````
+
+````
+(full = 11818.996847606, primal = 0.006324865, derivative = 0.112343824, ratio = 17.762248522300474)
+````
 
 ````julia
 describe(out.chain_stats)
@@ -586,15 +657,15 @@ Summary Statistics
   parameters      mean       std      mcse     ess_bulk     ess_tail      rhat   ess_per_sec
       Symbol   Float64   Float64   Float64      Float64      Float64   Float64       Missing
 
-     param_1   -0.0007    0.4473    0.0021   47619.5626   50654.4834    1.0000       missing
-     param_2    0.2001    0.3026    0.0016   69091.4836   47431.6537    1.0000       missing
+     param_1   -0.0028    0.4470    0.0022   42073.8193   44006.1356    1.0001       missing
+     param_2    0.2002    0.2987    0.0015   67102.4997   47506.8005    1.0000       missing
 
 Quantiles
   parameters      2.5%     25.0%     50.0%     75.0%     97.5%
       Symbol   Float64   Float64   Float64   Float64   Float64
 
-     param_1   -0.8726   -0.3031   -0.0015    0.2997    0.8786
-     param_2   -0.1427    0.0164    0.1220    0.2880    1.0197
+     param_1   -0.8757   -0.3049   -0.0037    0.2990    0.8706
+     param_2   -0.1427    0.0173    0.1223    0.2896    1.0185
 
 ````
 
@@ -603,67 +674,7 @@ out.acc
 ````
 
 ````
-0.12851975703951413
-````
-
-What happens if we start in the mode?
-
-````julia
-out = opt_autocov_reverse(
-    Rosenbrock(),
-    optimizer=Adam(0.003),
-    0.6 .* [1.0;0.0;1.0], zeros(2);
-    N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
-    image=true); #video="PT_Rosenbrock.mp4")
-out.θ
-````
-
-````
-3-element Vector{Float64}:
-  0.6098749797202999
- -0.05144183281789394
-  0.40619955194213764
-````
-
-````julia
-out.fig
-````
-![](analyze_mh_tuning_problem-54.png)
-
-````julia
-describe(out.chain_stats)
-````
-
-````
-Chains MCMC chain (500000×2×4 Array{Float64, 3}):
-
-Iterations        = 1:1:500000
-Number of chains  = 4
-Samples per chain = 500000
-parameters        = param_1, param_2
-
-Summary Statistics
-  parameters      mean       std      mcse     ess_bulk     ess_tail      rhat   ess_per_sec
-      Symbol   Float64   Float64   Float64      Float64      Float64   Float64       Missing
-
-     param_1   -0.0030    0.4423    0.0019   52296.6010   44279.7915    1.0001       missing
-     param_2    0.1955    0.2879    0.0015   64744.4907   38805.5077    1.0000       missing
-
-Quantiles
-  parameters      2.5%     25.0%     50.0%     75.0%     97.5%
-      Symbol   Float64   Float64   Float64   Float64   Float64
-
-     param_1   -0.8677   -0.3037   -0.0030    0.2980    0.8572
-     param_2   -0.1427    0.0161    0.1219    0.2851    0.9824
-
-````
-
-````julia
-out.acc
-````
-
-````
-0.17731335462670927
+0.13488676977353953
 ````
 
 ````julia
@@ -677,7 +688,7 @@ Compare with what happens if we try to tune by acceptance rate
 ````julia
 out = opt_autocov_reverse(
     Rosenbrock(),
-    0.375 .* [1.0;0.0;1.0], [0.1;0.0];
+    0.375 .* [1.0;0.0;1.0], zeros(2);
     N=500_000, forward_mode = Val(true), full_parameterization = Val(true),
     image=true, opt_iters=0);
 describe(out.chain_stats)
@@ -695,15 +706,15 @@ Summary Statistics
   parameters      mean       std      mcse     ess_bulk     ess_tail      rhat   ess_per_sec
       Symbol   Float64   Float64   Float64      Float64      Float64   Float64       Missing
 
-     param_1   -0.0015    0.4451    0.0023   36903.7814   39970.1805    1.0001       missing
-     param_2    0.1980    0.2969    0.0017   58423.1259   36053.5762    1.0001       missing
+     param_1   -0.0026    0.4484    0.0023   37044.0141   36451.9137    1.0002       missing
+     param_2    0.2010    0.3006    0.0017   55417.3388   33737.7992    1.0000       missing
 
 Quantiles
   parameters      2.5%     25.0%     50.0%     75.0%     97.5%
       Symbol   Float64   Float64   Float64   Float64   Float64
 
-     param_1   -0.8748   -0.3021   -0.0010    0.2999    0.8662
-     param_2   -0.1433    0.0158    0.1219    0.2864    1.0029
+     param_1   -0.8871   -0.3034   -0.0026    0.2993    0.8779
+     param_2   -0.1428    0.0154    0.1216    0.2899    1.0309
 
 ````
 
@@ -712,7 +723,7 @@ out.acc
 ````
 
 ````
-0.23304246608493218
+0.23277296554593108
 ````
 
 ---
